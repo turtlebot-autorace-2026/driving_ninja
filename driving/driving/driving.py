@@ -1,4 +1,5 @@
 from typing import Optional, Literal, get_args, cast
+import json
 import math
 import os
 import time
@@ -59,6 +60,7 @@ class DrivingNode(Node):
         self.cmd_vel_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.debug_pub1 = self.create_publisher(CompressedImage, 'debug1', 10)
         self.debug_pub2 = self.create_publisher(CompressedImage, 'debug2', 10)
+        self.lane_info_pub = self.create_publisher(String, 'lane_info', 10)
 
 
         ## 카메라 소스 입력
@@ -224,9 +226,19 @@ class DrivingNode(Node):
                 lookahead_row=p('yolo_lane.lookahead_row'),
                 single_offset=p('yolo_lane.single_offset'),
                 lane_width=p('yolo_lane.lane_width'),
-                roi_side=self.roi_side,
+                # 주행 대기 중에는 외부 미션이 /lane_info를 쓰므로 표지판 ROI로 시야를 자르지 않는다.
+                roi_side=self.roi_side if self.lane_enabled else None,
                 roi_height_scale=p('sign.roi_height_scale'),
             )
+            yellow, white = self.yolo_lane.lane.lane_offsets()
+            yellow_heading, white_heading = self.yolo_lane.lane.lane_headings()
+            self.lane_info_pub.publish(String(data=json.dumps({
+                'stamp': {'sec': msg.header.stamp.sec, 'nanosec': msg.header.stamp.nanosec},
+                'yellow': yellow,
+                'white': white,
+                'yellow_heading': yellow_heading,
+                'white_heading': white_heading,
+            })))
             twist = self.pure_pursuit.makeTwist(
                 target, mode, v_max=p('pure_pursuit.v_max'),
                 v_lost=p('pure_pursuit.v_lost'), k_lat=p('pure_pursuit.k_lat'),

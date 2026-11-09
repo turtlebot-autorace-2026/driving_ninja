@@ -111,6 +111,30 @@ class LanePath:
         order = np.argsort(path[:, 0])
         return x, float(np.interp(x, path[order, 0], path[order, 1]))
 
+    def lane_offsets(self):
+        '''(yellow, white) perpendicular distance [m, left +] from the wheel axle center to the lane
+        tangent at the lowest sampled rows (the lane is not visible beside the axle); None if unseen.'''
+        def offset(xs):
+            if xs is None:
+                return None
+            p0, (dx, dy) = self.lane_tangent(xs)
+            return float(p0[1] * dx - p0[0] * dy)
+        return offset(self.yellow), offset(self.white)
+
+    def lane_headings(self):
+        '''(yellow, white) lane direction in the robot frame [rad, left +]; None for an unseen lane.'''
+        def heading(xs):
+            if xs is None:
+                return None
+            _, (dx, dy) = self.lane_tangent(xs)
+            return float(np.arctan2(dy, dx))
+        return heading(self.yellow), heading(self.white)
+
+    def lane_tangent(self, xs):
+        '''Lowest sampled lane point and unit direction (toward the front) in the robot frame.'''
+        p0, p1 = self.to_robot(xs[:2], self.rows[:2])
+        return p0, (p1 - p0) / np.hypot(*(p1 - p0))
+
     def roi_x_range(self):
         '''ROI columns [x0, x1). roi_side 'left': image left edge ~ robot center line,
         'right': robot center line ~ image right edge, None: robot_x +- roi_half_width.'''

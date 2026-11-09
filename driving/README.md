@@ -215,6 +215,7 @@ ros2 run driving driving_debug --ros-args -r debug1:=/another_debug/compressed
 | `/cmd_vel` | 발행 / `geometry_msgs/msg/Twist` | 선속도와 각속도 |
 | `/debug1` | 발행 / `sensor_msgs/msg/CompressedImage` | 선택한 알고리즘의 JPEG |
 | `/debug2` | 발행자 생성 / `sensor_msgs/msg/CompressedImage` | 현재 발행 없음 |
+| `/lane_info` | 발행 / `std_msgs/msg/String` | YOLO 프레임별 JSON: `{"stamp": {"sec", "nanosec"}, "yellow": m 또는 null, "white": m 또는 null, "yellow_heading": rad 또는 null, "white_heading": rad 또는 null}`. 값은 뒷바퀴 차축 중심에서 차선까지의 수직 최단거리[m]로, BEV 최하단 샘플 구간의 접선을 연장해 계산하며 왼쪽이 `+`, 보이지 않는 차선은 `null`. `*_heading`은 로봇 기준 차선 방향이며 왼쪽이 `+`. 주행 대기 중에도 발행하고, 이때는 표지판 ROI를 적용하지 않는다 |
 
 영상 구독은 `qos_profile_sensor_data`, 선택·주행·교차로 상태 구독과 발행은 depth 10 기본 QoS다. 이름에 raw가 있어도 현재 메시지 타입은 `CompressedImage`다.
 
