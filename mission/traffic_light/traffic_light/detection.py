@@ -97,7 +97,7 @@ class TrafficLightDetection(Node):
         roixs=320
         roixe=640
         roiys=0
-        roiye=240
+        roiye=312
     
         if not self.state: return
         try:
