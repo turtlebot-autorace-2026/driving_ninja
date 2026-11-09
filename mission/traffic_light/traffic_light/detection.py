@@ -86,7 +86,7 @@ class TrafficLightDetection(Node):
         return False
     
     def checkGreenLight(self, src):
-        threshold = 1000
+        threshold = 300
         if np.count_nonzero(src) > threshold:
             self.count += 1
             if self.count > 5:

@@ -5,38 +5,29 @@ from rclpy.node import Node
 from std_msgs.msg import Bool
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
-from rclpy.qos import qos_profile_sensor_data, QoSProfile
+from rclpy.qos import qos_profile_sensor_data, DurabilityPolicy, QoSProfile
 from rclpy.duration import Duration
 
 class ConstructionDetection(Node):
     def __init__(self):
         super().__init__('construct_detect_node')
-        qos = QoSProfile(depth=10)
+        # mission_model은 표지판 토픽을 latched(transient local)로 발행하므로 같은 QoS로 받는다.
+        sign_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.constructionSubscriber = self.create_subscription(
+            Bool,
+            '/construction',
+            self.constructionSubscriber_callback,
+            sign_qos
+        )
         self.scanSubscriber = self.create_subscription(
             LaserScan,
             '/scan',
             self.scanSubscriber_callback,
             qos_profile=qos_profile_sensor_data
         )
-        self.stateSubscriber = self.create_subscription(
-            Bool,
-            '/construction_state',
-            self.stateSubscriber_callback,
-            10
-        )
-        self.statePublisher = self.create_publisher(
-            Bool,
-            'construction_state',
-            10
-        )
         self.velPublisher = self.create_publisher(
             Twist,
             'cmd_vel',
-            10
-        )
-        self.laneModePublisher = self.create_publisher(
-            Bool,
-            '/lane_mode',
             10
         )
         self.laneStatePublisher = self.create_publisher(
@@ -44,33 +35,26 @@ class ConstructionDetection(Node):
             '/lane_state',
             10
         )
-        
-        self.state = False
-        self.first = True
+
         self.timer = self.create_timer(0.1, self.moving)
+        self.construction_seen = False
         self.moving_start = False
         self.moving_step = 0
         self.tmp_time = None
-    
-    def stateSubscriber_callback(self, msg):
-        self.state = msg.data
-        if self.state == True:
-            if self.first:
-                print(f'\nStart Construction Detection')
-                self.first = False
-            msg = Bool()
-            msg.data = True
-            self.statePublisher.publish(msg)
-        else: print('Terminate Construction Detection\n')
-    
+
+    def constructionSubscriber_callback(self, msg):
+        # 한 번이라도 True가 되면 이후 /construction이 False여도 유지한다.
+        if msg.data:
+            self.construction_seen = True
+
     def scanSubscriber_callback(self, msg):
-        if not self.state: return
+        # 주행이 시작되면 끝날 때까지 다시 판단하지 않는다.
+        if not self.construction_seen or self.moving_start: return
         ranges = np.array(msg.ranges)
         front_sector = ranges[480:600]
         valid_ranges = front_sector[np.isfinite(front_sector)]
         valid_ranges = valid_ranges[valid_ranges > 0.0]
         if len(valid_ranges) == 0:
-            self.front_distance_avg = float('inf')
             return
         front_distance_avg = np.mean(valid_ranges)
         if front_distance_avg < 0.3:
@@ -175,15 +159,13 @@ class ConstructionDetection(Node):
                 twist.angular.z = 0.0
                 self.moving_step = -1
                 self.tmp_time = None
+                self.velPublisher.publish(twist)
                 msg = Bool()
-                msg.data = False
-                self.statePublisher.publish(msg)
                 msg.data = True
-                self.laneModePublisher.publish(msg)
                 self.laneStatePublisher.publish(msg)
-                self.state = False
                 self.destroy_node()
                 rclpy.shutdown()
+                return
             self.velPublisher.publish(twist)
     
 def main():

@@ -109,6 +109,9 @@ class DrivingNode(Node):
             Bool, 'left', self.left_sign_callback, sign_qos)
         self.right_sign_subscription = self.create_subscription(
             Bool, 'right', self.right_sign_callback, sign_qos)
+        # 공사 표지판도 오른쪽 회전 표지판과 같은 방향 ROI를 사용한다.
+        self.construction_sign_subscription = self.create_subscription(
+            Bool, 'construction', self.right_sign_callback, sign_qos)
         ## 파라미터
         self.declare_parameter('basic_sat.beta', -5080.1)   # for basic_sat
         self.declare_parameter('basic.lane_mode', True)   # for basic_sat, basic_sobel & basic_p
