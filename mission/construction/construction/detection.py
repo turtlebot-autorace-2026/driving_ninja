@@ -11,9 +11,10 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 
 # 상태: 대기 -> 차선 추종 <-> (회전 -> 저속 직진 -> 복귀 회전) -> 종료
-# 저속 직진 거리 제한을 넘으면 HALT에서 정지 상태를 유지한다.
+# 저속 직진은 /odom 기준 고정 거리만큼 이동한 뒤 복귀 회전한다.
 WAIT, FOLLOW, TURN_OUT, CREEP, TURN_BACK, DONE, HALT = range(7)
 LEFT, RIGHT = 1.0, -1.0
+CREEP_DISTANCE = 0.25  # 회피 회전 후 고정 직진 거리 [m]
 
 
 def wrapAngle(angle):
@@ -24,8 +25,8 @@ class ConstructionDetection(Node):
     def __init__(self):
         super().__init__('construct_detect_node')
         self.declare_parameter('lane_offset', 0.143)        # 따라갈 차선과의 거리 [m]
-        self.declare_parameter('obstacle_distance', 0.3)    # 전방 물체 판단 거리 [m]
-        self.declare_parameter('min_obstacle_points', 40)   # 물체로 볼 최소 점 개수 (전방 60개 중)
+        self.declare_parameter('obstacle_distance', 0.2)    # 전방 물체 판단 거리 [m]
+        self.declare_parameter('min_obstacle_points', 10)   # 물체로 볼 최소 점 개수 (전방 60개 중)
         self.declare_parameter('finish_timeout', 10.0)    # 물체 미감지 종료 시간 [s]
         self.declare_parameter('both_confirm_frames', 3)    # 양쪽 차선 종료 판단 연속 프레임
         self.declare_parameter('last_lane_hold', 3.0)       # 물체 앞에서 차선이 없을 때 직전 차선을 쓸 시간 [s]
@@ -33,8 +34,9 @@ class ConstructionDetection(Node):
         self.declare_parameter('follow_speed', 0.1)         # 차선 추종 선속도 [m/s]
         self.declare_parameter('lost_speed', 0.05)          # 차선 미검출 직진 선속도 [m/s]
         self.declare_parameter('creep_speed', 0.05)         # 회피 저속 직진 선속도 [m/s]
-        self.declare_parameter('creep_stop_distance', 0.1)  # 목표 차선이 이 거리 안에 오면 직진 종료 [m]
-        self.declare_parameter('creep_max_distance', 0.6)   # 차선 없이 저속 직진할 최대 거리 [m]
+        # 기존 차선 기반 직진 종료 설정 (고정 거리 사용 중에는 비활성화)
+        # self.declare_parameter('creep_stop_distance', 0.005)  # 목표 차선이 이 거리 안에 오면 직진 종료 [m]
+        # self.declare_parameter('creep_max_distance', 0.6)   # 차선 없이 저속 직진할 최대 거리 [m]
         self.declare_parameter('kp', 3.0)                 # 차선 offset P 게인
         self.declare_parameter('kh', 1.5)                   # 차선 각도 게인
         self.declare_parameter('max_angular', 1.0)          # 차선 추종 최대 각속도 [rad/s]
@@ -130,10 +132,29 @@ class ConstructionDetection(Node):
         self.state = FOLLOW
 
     def scanSubscriber_callback(self, msg):
-        ranges = np.array(msg.ranges)
-        front_sector = ranges[510:570]   # 정면 ±10도
-        valid_ranges = front_sector[np.isfinite(front_sector)]
-        valid_ranges = valid_ranges[valid_ranges > 0.0]
+        # ranges = np.array(msg.ranges)
+        # front_sector = ranges[510:570]   # 정면 ±10도
+        # valid_ranges = front_sector[np.isfinite(front_sector)]
+        # valid_ranges = valid_ranges[valid_ranges > 0.0]
+
+        ranges = np.asarray(msg.ranges)
+        angles = msg.angle_min + np.arange(ranges.size) * msg.angle_increment
+
+        # 350° 같은 각도를 -10°로 바꿔 전방 양쪽을 함께 선택한다.
+        angles = (angles + np.pi) % (2 * np.pi) - np.pi
+        front_indices = np.flatnonzero(np.abs(angles) <= np.deg2rad(15.0))
+        front_ranges = ranges[front_indices]
+
+        valid_ranges = front_ranges[
+            np.isfinite(front_ranges)
+            & (front_ranges > 0.0)
+            & (front_ranges >= msg.range_min)
+            & (front_ranges <= msg.range_max)
+        ]
+
+        print(len(valid_ranges))
+
+
         # 거리 안에 들어온 점이 충분할 때만 물체로 본다. 점 개수가 물체의 폭에 해당한다.
         close_ranges = valid_ranges[valid_ranges < self.param('obstacle_distance')]
         enough = len(close_ranges) >= self.param('min_obstacle_points')
@@ -196,14 +217,14 @@ class ConstructionDetection(Node):
             return False
         self.get_logger().info(
             f'Avoid {self.avoid_count + 1}: turn {"left" if self.turn_direction == LEFT else "right"}, '
-            f'creep until {self.creep_line}')
+            f'creep {CREEP_DISTANCE:.2f} m')
         self.state = TURN_OUT
         return True
 
     def startTurn(self, direction):
         if self.yaw is None:
             return False
-        self.turn_target = wrapAngle(self.yaw + direction * math.pi / 2.0)
+        self.turn_target = wrapAngle(self.yaw + direction * math.radians(82.0))
         return True
 
     def turnInPlace(self):
@@ -251,21 +272,28 @@ class ConstructionDetection(Node):
                 self.state = CREEP
 
         elif self.state == CREEP:
-            line = yellow if self.creep_line == 'yellow' else white
-            stop_distance = self.param('creep_stop_distance')
             traveled = math.dist(self.position, self.creep_start)
+
+            # 기존 차선 기반 도달 판단과 최대 거리 초과 시 정지 로직
+            # line = yellow if self.creep_line == 'yellow' else white
+            # stop_distance = self.param('creep_stop_distance')
             # 차선을 정면으로 보면 검출이 끊기므로, 보일 때 계산한 남은 거리를 odom으로 채운다.
-            if line is not None:
-                self.creep_target = traveled + max(abs(line) - stop_distance, 0.0)
-                reached = abs(line) <= stop_distance
-            else:
-                reached = self.creep_target is not None and traveled >= self.creep_target
-            if not reached:
-                if traveled >= self.param('creep_max_distance'):
-                    self.get_logger().warning(f'{self.creep_line} lane not found while creeping: stop')
-                    self.publishVelocity()
-                    self.state = HALT
-                    return
+            # if line is not None:
+            #     self.creep_target = traveled + max(abs(line) - stop_distance, 0.0)
+            #     reached = abs(line) <= stop_distance
+            # else:
+            #     reached = self.creep_target is not None and traveled >= self.creep_target
+            # if not reached:
+            #     if traveled >= self.param('creep_max_distance'):
+            #         self.get_logger().warning(f'{self.creep_line} lane not found while creeping: stop')
+            #         self.publishVelocity()
+            #         self.state = HALT
+            #         return
+            #     self.publishVelocity(self.param('creep_speed'), 0.0)
+            #     return
+
+            # 차선 검출 여부와 관계없이 고정 거리만큼 직진한다.
+            if traveled < CREEP_DISTANCE:
                 self.publishVelocity(self.param('creep_speed'), 0.0)
                 return
             self.publishVelocity()

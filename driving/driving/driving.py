@@ -122,7 +122,7 @@ class DrivingNode(Node):
         self.declare_parameter('yolo_lane.model_path', default_model,
                                ParameterDescriptor(read_only=True))
         self.declare_parameter('yolo_lane.device', '', ParameterDescriptor(read_only=True))
-        self.declare_parameter('yolo_lane.process_hz', 15.0,
+        self.declare_parameter('yolo_lane.process_hz', 10.0,
                                ParameterDescriptor(read_only=True))
         self.declare_parameter('yolo_lane.conf', 0.4)
         self.declare_parameter('yolo_lane.imgsz', 640)
@@ -374,14 +374,14 @@ class DrivingNode(Node):
         if img is None:
             return
         stamp = self.get_clock().now().to_msg()
-        self.publish_compressed(self.debug_pub1, img, stamp)
+        # self.publish_compressed(self.debug_pub1, img, stamp)
 
     def publish_debug_basic_sobel(self):
         img = self.basic_sobel.debug()
         if img is None:
             return
         stamp = self.get_clock().now().to_msg()
-        self.publish_compressed(self.debug_pub1, img, stamp)
+        # self.publish_compressed(self.debug_pub1, img, stamp)
 
 
     def publish_compressed(self, publisher, frame, stamp, frame_id=''):
