@@ -50,14 +50,30 @@ class ConstructionDetection(Node):
     def scanSubscriber_callback(self, msg):
         # 주행이 시작되면 끝날 때까지 다시 판단하지 않는다.
         if not self.construction_seen or self.moving_start: return
-        ranges = np.array(msg.ranges)
-        front_sector = ranges[480:600]
-        valid_ranges = front_sector[np.isfinite(front_sector)]
-        valid_ranges = valid_ranges[valid_ranges > 0.0]
+        # ranges = np.array(msg.ranges)
+        # front_sector = ranges[480:600]
+        # valid_ranges = front_sector[np.isfinite(front_sector)]
+        # valid_ranges = valid_ranges[valid_ranges > 0.0]
+        ranges = np.asarray(msg.ranges)
+        angles = msg.angle_min + np.arange(ranges.size) * msg.angle_increment
+
+        # 350° 같은 각도를 -10°로 바꿔 전방 양쪽을 함께 선택한다.
+        angles = (angles + np.pi) % (2 * np.pi) - np.pi
+        front_indices = np.flatnonzero(np.abs(angles) <= np.deg2rad(20.0))
+        front_ranges = ranges[front_indices]
+
+        valid_ranges = front_ranges[
+            np.isfinite(front_ranges)
+            & (front_ranges > 0.0)
+            & (front_ranges >= msg.range_min)
+            & (front_ranges <= msg.range_max)
+        ]
+        
         if len(valid_ranges) == 0:
             return
         front_distance_avg = np.mean(valid_ranges)
         if front_distance_avg < 0.3:
+            
             self.get_logger().info(f'avg distance : {front_distance_avg:.2f}')
             msg = Bool()
             msg.data = False

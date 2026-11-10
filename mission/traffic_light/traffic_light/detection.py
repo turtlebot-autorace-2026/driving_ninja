@@ -130,10 +130,12 @@ class TrafficLightDetection(Node):
             self.destroy_node()
             rclpy.shutdown()
             
-        cv2.rectangle(src, (roixs, roiys), (roixe, roiye), (255,0,0), thickness=3, lineType=None, shift=None)
-        cv2.imshow('src', src)
-        cv2.imshow('src_red', src_red)
-        cv2.imshow('src_green', src_green)
+        # cv2.rectangle(src, (roixs, roiys), (roixe, roiye), (255,0,0), thickness=3, lineType=None, shift=None)
+        # cv2.imshow('src', src)
+        debug_mask = np.zeros_like(src[roiys:roiye, roixs:roixe])
+        debug_mask[src_red[roiys:roiye, roixs:roixe] > 0] = (0, 0, 255)  # BGR: red
+        debug_mask[src_green[roiys:roiye, roixs:roixe] > 0] = (0, 255, 0)  # BGR: green
+        cv2.imshow('traffic_light_mask', debug_mask)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cv2.destroyAllWindows()
             self.destroy_node()
