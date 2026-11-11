@@ -1,0 +1,8 @@
+#!/home/atom5/turtlebot3_ws/.venv/bin/python
+"""Run the driving node with the configured Jetson inference environment."""
+
+from driving.driving import main
+
+
+if __name__ == '__main__':
+    main()

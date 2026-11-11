@@ -1,0 +1,8 @@
+#!/home/atom5/turtlebot3_ws/.venv/bin/python
+"""Run mission detection with the configured Jetson inference environment."""
+
+from mission_model.detection import main
+
+
+if __name__ == '__main__':
+    main()

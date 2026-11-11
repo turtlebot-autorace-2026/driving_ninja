@@ -11,6 +11,8 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/models', ['models/lane_yolo26n_seg.pt', 'models/lane_yolo26n_seg.onnx', 'models/README.md']),
+        # data_files preserves the launcher's explicit venv shebang on rebuild.
+        ('lib/' + package_name, ['scripts/driving']),
     ],
     install_requires=['setuptools'],
     python_requires='>=3.8',
@@ -21,7 +23,6 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
-            'driving = driving.driving:main',
             'driving_debug = driving.driving_debug:main',
         ],
     },

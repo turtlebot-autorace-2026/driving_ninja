@@ -26,8 +26,10 @@ onnxruntime만으로 추론해 torch/ultralytics를 import하지 않는다(PC CP
 - 변환: `YOLO('lane_yolo26n_seg.pt').export(format='onnx', imgsz=(480, 640), opset=17, simplify=True)`
   (ultralytics 8.4.192). BEV가 640x480이라 직사각 입력으로 내보내 `.pt` 추론과 마스크가 같다.
   입력 크기가 ONNX에 고정되므로 `yolo_lane.imgsz`는 `.onnx`에서 쓰이지 않는다.
-- `yolo_lane.device`: `''` 자동(TensorRT → CUDA → CPU), `'trt'`, `'cuda'`/`'0'`, `'cpu'`.
+- `yolo_lane.device` 기본값: `'cuda'`(ONNX Runtime CUDA, TensorRT 엔진 생성 없음).
+  `'cpu'`, `'0'`, `'trt'`, `''` 자동(TensorRT → CUDA → CPU)도 지정할 수 있다.
 - Jetson Orin Nano(JetPack 5, Python 3.8): Jetson Zoo의 JetPack 5용 `onnxruntime-gpu` 휠을
-  설치한다(pip의 일반 `onnxruntime`은 CPU 전용). TensorRT provider는 첫 실행에서 FP16 엔진을
+  설치한다(pip의 일반 `onnxruntime`은 CPU 전용). `'trt'` 또는 `''` 자동 선택으로
+  TensorRT provider를 사용할 때는 첫 실행에서 FP16 엔진을
   빌드하고(수 분 걸림) `~/.cache/yolo_trt`에 저장해 다음 실행부터 재사용한다.
   모델을 다시 변환하면 이 캐시를 지운다.

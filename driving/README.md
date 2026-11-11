@@ -99,7 +99,7 @@ Sat은 회색 밝기에 `clip(29.12 * 밝기 + beta, 0, 255)`를 적용하며 HS
 
 ## 빌드와 실행
 
-ROS 의존성은 [package.xml](package.xml), YOLO Python 의존성은 [requirements-yolo.txt](requirements-yolo.txt)에 있다. 기본 YOLO 주행에는 PyTorch/Ultralytics가 설치된 실행 환경이 필요하다. 모델은 빌드 시 `share/driving/models`에 설치된다.
+ROS 의존성은 [package.xml](package.xml)에 있다. 기본 `.onnx` 모델은 ONNX Runtime으로 추론하며 Torch/Ultralytics를 사용하지 않는다. `.pt` 모델을 선택할 때는 [requirements-yolo.txt](requirements-yolo.txt)의 의존성이 필요하다. 모델은 빌드 시 `share/driving/models`에 설치된다.
 
 다음은 Galactic 기준 명령이다. 현재 Humble 개발 VM에서는 ROS setup 경로를 `/opt/ros/humble/setup.bash`로 바꾼다.
 
@@ -114,7 +114,9 @@ source install/setup.bash
 
 빌드는 기본 ROS 환경에서 시스템 colcon을 사용한다. 위 `PYTHONNOUSERSITE=1`은 사용자 영역 setuptools가 시스템 빌드 도구와 섞이는 기존 충돌을 피하기 위한 실행 설정이며 패키지를 삭제하지 않는다.
 
-YOLO는 ROS와 같은 시스템 Python 기반 venv에 PyTorch/torchvision/Ultralytics를 준비한다. 이미 환경이 있으면 다시 만들지 않는다. 현재 개발 환경 경로는 `~/turtlebot3_ws/.venv`이며 venv에 `COLCON_IGNORE`를 둔다. 기본 환경에서 빌드한 console script의 Python은 venv 활성화만으로 바뀌지 않으므로, YOLO 실행은 인터프리터를 명시한다.
+YOLO는 ROS와 같은 시스템 Python 기반 venv에 ONNX Runtime을 준비한다. Jetson GPU에서는 JetPack에 맞는 `onnxruntime-gpu` 휠을 사용한다. 이미 환경이 있으면 다시 만들지 않는다. 현재 실행 환경 경로는 `/home/atom5/turtlebot3_ws/.venv`이며 venv에 `COLCON_IGNORE`를 둔다.
+
+`scripts/driving`의 첫 줄은 `#!/home/atom5/turtlebot3_ws/.venv/bin/python`이다. `setup.py`는 이 실행 파일을 `lib/driving/driving`에 설치해 `ros2 run driving driving`에서도 해당 가상환경을 사용한다. 시스템 Python으로 재빌드해도 shebang이 유지된다. 다른 사용자나 작업공간으로 옮길 때는 `scripts/driving`의 첫 줄을 해당 가상환경의 절대 경로로 바꾸고 재빌드한다. shebang에서는 `~`나 `$HOME`을 확장하지 않는다.
 
 ```bash
 source /opt/ros/galactic/setup.bash
@@ -123,6 +125,15 @@ source "$DRIVING_WS/install/setup.bash"
 "$DRIVING_WS/.venv/bin/python" -m driving.driving --ros-args \
   -r cmd_vel:=cmd_vel_preview -p yolo_lane.device:=cpu
 ```
+
+기본 모델은 `.onnx`, 기본 실행기는 ONNX Runtime CUDA다. Jetson에서는 위 ROS/workspace setup을 읽은 터미널에서 별도 장치 옵션 없이 실행한다. TensorRT 엔진은 기본 실행에서 생성하지 않는다.
+
+```bash
+ros2 run driving driving \
+  --ros-args -r cmd_vel:=cmd_vel_preview
+```
+
+`No module named 'onnxruntime'`가 나면 설치된 `lib/driving/driving`의 shebang과 ONNX Runtime을 설치한 Python이 같은지 확인한다. 프롬프트의 `(.venv)`만으로는 가상환경의 실제 경로를 구분할 수 없다. 미션 패키지 등 별도 console script에는 이 주행 실행 파일의 shebang이 적용되지 않는다.
 
 위 프로세스는 YOLO + Pure Pursuit를 선택한 상태로 주행을 기다린다. `/camera` 입력이 있으면 대기 중에도 모델을 로드해 검출·조향 계산을 수행하고 `/debug1`에 JPEG를 발행한다(`yolo_lane.publish_debug=true`일 때). 아래 주행 시작 명령 이후 새로 수신한 영상부터 속도도 발행한다. 카메라 발행기나 bag 변환기는 별도로 실행해야 하며, 이 패키지는 입력 영상을 만들지 않는다. `/camera_raw_16_9`만 재생하면 `/camera`를 사용하는 계산은 시작되지 않는다. basic만 사용할 때는 아래의 검출 선택 명령 하나를 적용한다. YOLO 의존성이 없는 환경에서는 카메라 입력을 시작하기 전에 basic 조합을 선택한다.
 
@@ -240,7 +251,7 @@ ros2 topic pub --once /driving/detection std_msgs/msg/String "{data: basic_sobel
 | `basic_sat.beta` | `-5080.1` | Sat 프레임마다 / 밝기 변환의 beta, alpha=29.12 고정 |
 | `basic.lane_mode` | `true` | basic 프레임마다 / 검출과 조향의 좌우 모드 |
 | `yolo_lane.model_path` | 설치된 모델 경로 | 시작 시 / 읽기 전용, 모델은 첫 YOLO 처리 때 로드 |
-| `yolo_lane.device` | `''` | 시작 시 / 읽기 전용, 자동 선택 또는 `cpu`, `0` |
+| `yolo_lane.device` | `'cuda'` | 시작 시 / 읽기 전용, ONNX Runtime CUDA. `cpu`, `0`, `trt`, `''`(TensorRT → CUDA → CPU 자동 선택)도 지정 가능 |
 | `yolo_lane.process_hz` | `15.0` | 시작 시 / 읽기 전용, 유한한 양수 |
 | `yolo_lane.conf` | `0.4` | YOLO 프레임마다 / 신뢰도 기준 0~1 |
 | `yolo_lane.imgsz` | `640` | YOLO 프레임마다 / 추론 입력 크기, 양의 정수 |

@@ -127,7 +127,7 @@ class DrivingNode(Node):
         # 이 세 값은 시작할 때 적용한다. 실행 중 set은 거부하여 미반영을 숨기지 않는다.
         self.declare_parameter('yolo_lane.model_path', default_model,
                                ParameterDescriptor(read_only=True))
-        self.declare_parameter('yolo_lane.device', '', ParameterDescriptor(read_only=True))
+        self.declare_parameter('yolo_lane.device', 'cuda', ParameterDescriptor(read_only=True))
         self.declare_parameter('yolo_lane.process_hz', 10.0,
                                ParameterDescriptor(read_only=True))
         self.declare_parameter('yolo_lane.conf', 0.4)

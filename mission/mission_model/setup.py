@@ -13,6 +13,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/models', glob.glob('models/*.pt') + glob.glob('models/*.onnx') + ['models/README.md']),
         ('share/' + package_name + '/launch', glob.glob('launch/*.launch.py')),
+        # Preserve the explicit venv shebang when rebuilding with system Python.
+        ('lib/' + package_name, ['scripts/detection']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,9 +23,4 @@ setup(
     description='Mission sign detection (YOLO11n): publishes the current mission name on /mission_mode',
     license='TODO: License declaration',
     tests_require=['pytest'],
-    entry_points={
-        'console_scripts': [
-            'detection = mission_model.detection:main',
-        ],
-    },
 )

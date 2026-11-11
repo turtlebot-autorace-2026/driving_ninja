@@ -4,8 +4,8 @@
   ros2 launch mission_model mission_model.launch.py sim:=true    # Gazebo: /front_camera/image_raw -> /camera2
 
 The default .onnx model needs only onnxruntime (on the Jetson: onnxruntime-gpu for JetPack 5);
-a .pt model needs ultralytics. The node runs with `python` (default: ~/autorace/yolo_venv/bin/python
-if it exists, otherwise python3).
+a .pt model needs ultralytics. By default the node uses the installed detection script's
+venv shebang. Set `python` to override its interpreter explicitly. The default device is CUDA.
 """
 import os
 
@@ -16,18 +16,16 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-VENV_PYTHON = os.path.expanduser('~/autorace/yolo_venv/bin/python')
-
 
 def _detection(context):
-    python = LaunchConfiguration('python').perform(context) or \
-        (VENV_PYTHON if os.path.exists(VENV_PYTHON) else 'python3')
+    python = LaunchConfiguration('python').perform(context)
     script = os.path.join(get_package_prefix('mission_model'), 'lib', 'mission_model', 'detection')
     sim = LaunchConfiguration('sim').perform(context)
     args = ['--ros-args', '-p', f'use_sim_time:={sim}',
             '-p', f"device:='{LaunchConfiguration('device').perform(context)}'",
             '-p', f"show:={LaunchConfiguration('show').perform(context)}"]
-    return [ExecuteProcess(cmd=[python, '-u', script, *args], output='screen', name='mission_detection')]
+    command = [python, '-u', script, *args] if python else [script, *args]
+    return [ExecuteProcess(cmd=command, output='screen', name='mission_detection')]
 
 
 def generate_launch_description():
@@ -35,7 +33,7 @@ def generate_launch_description():
         DeclareLaunchArgument('sim', default_value='false',
                               description='true: convert the Gazebo front camera to /camera2'),
         DeclareLaunchArgument('python', default_value='', description='python with onnxruntime (.onnx) or ultralytics (.pt)'),
-        DeclareLaunchArgument('device', default_value='', description="'' auto, 'cpu', '0', 'cuda', 'trt' (trt/cuda: .onnx only)"),
+        DeclareLaunchArgument('device', default_value='cuda', description="'cuda' default, '' auto, 'cpu', '0', 'trt' (trt/cuda: .onnx only)"),
         DeclareLaunchArgument('show', default_value='false', description='cv2 debug window'),
         Node(
             package='camera_ros',

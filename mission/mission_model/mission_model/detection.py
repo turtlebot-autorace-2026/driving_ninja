@@ -45,7 +45,7 @@ class MissionDetection(Node):
         self.declare_parameter('topics', TOPICS)
         self.declare_parameter('conf', 0.7)
         self.declare_parameter('imgsz', 320)
-        self.declare_parameter('device', '')          # '' auto, 'cpu', '0'; .onnx also 'trt', 'cuda'
+        self.declare_parameter('device', 'cuda')      # ONNX Runtime CUDA by default; '' auto, 'cpu', '0', 'trt'
         self.declare_parameter('min_box_size', 0.20)    # longer box side / image height: ignore far signs
         self.declare_parameter('confirm_frames', 3)     # frames in a row with the sign before true
         self.declare_parameter('release_frames', 5)     # frames in a row without the sign before false
