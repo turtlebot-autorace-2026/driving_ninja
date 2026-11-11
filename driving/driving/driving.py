@@ -38,7 +38,6 @@ class DrivingNode(Node):
         self.lane_detection_algorithm: Detection = 'yolo_lane'
         self.lane_enabled = False  # 검출은 계속하고 /lane_state=True부터 주행 속도를 발행한다.
         self.is_intersection = False
-        self.intersection_side: Optional[str] = None  # None | left | right
         # 회전 표지판(/left, /right): True가 되면 ROI를 중앙선부터 해당 방향 영상 끝까지로 바꾸고,
         # sign.roi_hold_sec 뒤 기본 ROI로 복구한다.
         self.roi_side: Optional[str] = None   # None | 'left' | 'right'
@@ -153,13 +152,6 @@ class DrivingNode(Node):
         self.declare_parameter('pure_pursuit.ang_smooth', 0.6)
         self.declare_parameter('pure_pursuit.v_single', 0.8)
 
-        # 방향별 교차로 설정. config/intersection.yaml에서 좌우를 독립적으로 조정한다.
-        for side in ('left', 'right'):
-            self.declare_parameter('intersection.' + side + '.v_max', 0.30)
-            self.declare_parameter('intersection.' + side + '.curvature_scale', 0.7)
-            self.declare_parameter('intersection.' + side + '.max_ang', 3.0)
-            self.declare_parameter('intersection.' + side + '.v_single', 0.8)
-
         # 주차 진입(left 모드) ROI와 미검출 고정 좌회전 탐색 설정.
         self.declare_parameter('parking.approach_roi_top_row', 250)  # BEV y[250,480)
         self.declare_parameter('parking.search_speed', 0.04)        # 전진 m/s
@@ -271,15 +263,13 @@ class DrivingNode(Node):
                 'yellow_heading': yellow_heading,
                 'white_heading': white_heading,
             })))
-            turn_speed, turn_curvature, max_ang, v_single = self.intersection_settings()
             twist = self.pure_pursuit.makeTwist(
                 target, mode, v_max=p('pure_pursuit.v_max'),
                 v_lost=p('pure_pursuit.v_lost'), k_lat=p('pure_pursuit.k_lat'),
-                max_ang=max_ang, k_v=p('pure_pursuit.k_v'),
-                ang_smooth=p('pure_pursuit.ang_smooth'), v_single=v_single,
+                max_ang=p('pure_pursuit.max_ang'), k_v=p('pure_pursuit.k_v'),
+                ang_smooth=p('pure_pursuit.ang_smooth'), v_single=p('pure_pursuit.v_single'),
                 intersection=self.is_intersection,
-                v_max_intersection=turn_speed,
-                curvature_scale_intersection=turn_curvature,
+                v_max_intersection=p('pure_pursuit.v_max_intersection'),
             )
             # 사용자가 활성화한 주차 진입 미검출 고정 좌회전 탐색.
             if self.parking_mode == 'left' and target is None:
@@ -334,27 +324,12 @@ class DrivingNode(Node):
             self.get_logger().info('Lane driving enabled.')
 
     def intersection_state_callback(self, msg: Bool):
-        if not msg.data:
-            # 종료 시 ROI와 방향별 설정을 함께 해제한다.
-            self.roi_side = None
-            self.intersection_side = None
         if self.is_intersection == msg.data:
             return
         self.is_intersection = msg.data
         # 원본처럼 모드 전환만으로 차선 추적이나 조향 평활화를 초기화하지 않는다.
         state = 'Start' if self.is_intersection else 'Finish'
         self.get_logger().info(state + ' Intersection Mode')
-
-    def intersection_settings(self):
-        """선택 방향의 속도·곡률 배율·각속도 상한·한쪽 차선 속도 배율."""
-        p = lambda name: self.get_parameter(name).value
-        if self.is_intersection and self.intersection_side in ('left', 'right'):
-            prefix = 'intersection.' + self.intersection_side + '.'
-            return (p(prefix + 'v_max'), p(prefix + 'curvature_scale'),
-                    p(prefix + 'max_ang'), p(prefix + 'v_single'))
-        # 방향 없는 외부 /intersection_state=True는 기존 공통 교차로 설정을 쓴다.
-        return (p('pure_pursuit.v_max_intersection'), 0.7,
-                p('pure_pursuit.max_ang'), p('pure_pursuit.v_single'))
 
     def left_sign_callback(self, msg: Bool):
         if msg.data and self.parking_mode in ('', 'intersection'):
@@ -373,13 +348,14 @@ class DrivingNode(Node):
             return
         self.parking_mode = mode
         # Do not carry an old turn sign/construction ROI or tracker across handoff.
-        self.intersection_state_callback(Bool(data=False))
+        self.roi_side = None
         self.roi_half = None
         self.reset_yolo()
         if mode in ('maneuver', 'halt'):
             self.cmd_vel_pub.publish(Twist())
         elif mode == 'intersection':
             # 출구의 같은 /left 이벤트가 주차 모드에서 먼저 무시됐어도 놓치지 않는다.
+            self.intersection_state_callback(Bool(data=True))
             self.start_sign_roi('left')
         self.get_logger().info('Parking lane mode: ' + (mode or 'normal'))
 
@@ -400,22 +376,16 @@ class DrivingNode(Node):
     def start_sign_roi(self, side: str):
         """표지판이 True가 된 시점부터 방향 ROI를 사용한다. 다시 True가 되면 그 시점부터 다시 센다."""
         self.roi_side = side
-        self.intersection_side = side
-        self.intersection_state_callback(Bool(data=True))
         self.roi_side_since = self.now_seconds()
         hold = self.get_parameter('sign.roi_hold_sec').value
         self.get_logger().info(f'Turn sign {side}: lane ROI from center to the {side} edge for {hold:.0f} s')
-        speed, curvature, max_ang, v_single = self.intersection_settings()
-        self.get_logger().info(
-            f'Intersection {side} settings: v_max={speed}, curvature_scale={curvature}, '
-            f'max_ang={max_ang}, v_single={v_single}')
 
     def check_sign_roi_timeout(self):
         if self.roi_side is None:
             return
         if self.now_seconds() - self.roi_side_since >= self.get_parameter('sign.roi_hold_sec').value:
-            self.intersection_state_callback(Bool(data=False))
-            self.get_logger().info('Turn sign ROI expired: normal lane ROI and driving settings')
+            self.roi_side = None
+            self.get_logger().info('Turn sign ROI expired: back to the normal lane ROI')
 
     # 선택은 이름을 바꾼 뒤, 다음 새 영상부터 해당 분기를 실행한다.
     def lane_detection_selection_callback(self, msg: String):

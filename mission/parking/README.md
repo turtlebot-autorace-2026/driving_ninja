@@ -121,7 +121,7 @@ ros2 param set /driving pure_pursuit.v_lost 0.05
 
 외부 `/lane_state=True`는 `maneuver`/`halt`의 차선 출력을 강제로 켜지 않는다. 외부 False, 수동 취소, 잘못된 입력 영상, 진행 중 시뮬레이션 시간 역행은 HALT로 정지한다. 진행 중 노드를 정상 종료할 때도 정지한다. 종료 뒤 ROS publish나 `/parking_state` 자기구독 루프는 없다.
 
-출구의 좌회전 인계는 한 모드 메시지로 처리해 `/left`가 driving에 먼저 도착해도 놓치지 않는다. 인계 후에는 driving의 `config/intersection.yaml`에 있는 `intersection.left.*` 네 설정을 사용한다. `parking_sim.yaml`의 `direction`과 속도·각도 배열은 주차 6단계용이며 교차로 좌회전 설정과는 별개다. 교차로 종료 신호 또는 표지 ROI 유지 시간 종료 시에는 일반 주행 설정으로 돌아간다. 이후 방향 표지와 교차로 상태 메시지는 기존 방식대로 처리된다. 별도의 속도 중계 remap은 필요 없다. 주차의 상태·모드·진입 시 정지·로그는 `set_phase()` 한 곳에서 함께 갱신한다.
+출구의 좌회전 인계는 한 모드 메시지로 처리해 `/left`가 driving에 먼저 도착해도 놓치지 않는다. 이후 방향 표지와 교차로 상태 메시지는 기존 방식대로 처리된다. 별도의 속도 중계 remap은 필요 없다. 주차의 상태·모드·진입 시 정지·로그는 `set_phase()` 한 곳에서 함께 갱신한다.
 
 ## 확인 범위
 

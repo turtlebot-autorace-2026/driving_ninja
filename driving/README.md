@@ -91,11 +91,11 @@ Sat은 회색 밝기에 `clip(29.12 * 밝기 + beta, 0, 255)`를 적용하며 HS
 - 양쪽 차선은 중앙 경로를, 한쪽 차선은 원본 법선 offset 경로를 계산한다. 비정상 차선 폭에서 이전 목표점과 가까운 차선을 선택하는 원본 규칙도 유지한다.
 - 목표점은 `LanePath.target()`으로 구해 `PurePursuit.compute_to()`에 전달한다. 범용 `compute(path)`는 목표점 선택 방식이 달라 사용하지 않는다.
 - 정상 차선 추종의 최대 속도 기본값은 0.40m/s, 한쪽 검출은 계산 속도의 0.8배다.
-- `/left`·`/right` 표지로 교차로에 진입하면 해당 `intersection.left.*`·`intersection.right.*` 설정을 적용한다. 양쪽 초기값은 속도 기준0.30m/s·곡률 배율0.7·각속도 상한3.0rad/s·단일 차선 속도 배율0.8로 같다. 이후 곡률 감속·단일 차선 배율·각속도 제한·평활화 순서는 기존과 같다. 속도 기준은 최종 속도를 고정하는 값이 아니다.
+- `/intersection_state`가 `true`이면 최대 속도 기준을 `pure_pursuit.v_max_intersection`(기본 0.30m/s)으로 바꾸고 곡률에 원본 배율 0.7을 적용한다. 이후 곡률 감속·한쪽 차선 배율·각속도 제한·평활화 순서는 원본과 같다. 최종 속도를 항상 0.30으로 고정하거나 최종 각속도에 단순히 0.7을 곱하는 방식이 아니다.
 - **정상 영상의 차선 미검출은 원본처럼 0.05m/s 직진, 각속도 0이다.** 정지 정책과 다르다.
 - 디버그는 BEV 위에 마스크, 차선 곡선, 중앙 경로, 목표점, ROI와 속도를 표시한다. 원본 `draw()`를 사용하며 JPEG header는 입력 header를 보존한다.
 
-`/lane_state`로 주행을 허용하고 `yolo_lane`을 선택했을 때 YOLO를 처리한다. `/intersection_state`는 YOLO 조향의 교차로 정책만 바꾼다. 기본 상태는 `false`다. 방향 표지로 시작한 교차로는 `/intersection_state=false` 또는 표지 ROI 유지 시간 종료 때 방향과 ROI를 함께 해제한다. 방향 없이 외부 `/intersection_state=true`만 받은 경우에는 기존 공통 설정을 쓰고 다음 상태 메시지까지 유지한다. 알고리즘을 바꿔도 이 값은 유지하며 Sat/Sobel + Basic_P 계산에는 적용하지 않는다. 교차로 상태 변경 자체는 차선 추적·조향 평활화를 초기화하지 않고 다음 YOLO 처리에 반영된다. 미검출은 교차로에서도 `v_lost` 직진 정책을 따른다. 기본 BEV 변환점, 카메라 높이, 차축 위치와 차선 폭의 실물 적합성은 대상 카메라에서 확인해야 한다.
+`/lane_state`로 주행을 허용하고 `yolo_lane`을 선택했을 때 YOLO를 처리한다. `/intersection_state`는 YOLO 조향의 교차로 정책만 바꾼다. 기본 상태는 `false`이고 마지막으로 수신한 값을 다음 상태 메시지까지 유지한다. 알고리즘을 바꿔도 이 값은 유지하며 Sat/Sobel + Basic_P 계산에는 적용하지 않는다. 교차로 상태 변경 자체는 차선 추적·조향 평활화를 초기화하지 않고 다음 YOLO 처리에 반영된다. 미검출은 교차로에서도 `v_lost` 직진 정책을 따른다. 기본 BEV 변환점, 카메라 높이, 차축 위치와 차선 폭의 실물 적합성은 대상 카메라에서 확인해야 한다.
 
 ## 빌드와 실행
 
@@ -222,8 +222,7 @@ ros2 run driving driving_debug --ros-args -r debug1:=/another_debug/compressed
 | `/camera_raw`, `/camera_raw_16_9` | 구독 / `sensor_msgs/msg/CompressedImage` | 마지막 메시지 저장만 수행 |
 | `/driving/detection` | 구독 / `std_msgs/msg/String` | `basic_sat`, `basic_sobel`, `yolo_lane` |
 | `/lane_state` | 구독 / `std_msgs/msg/Bool` | 외부 미션 또는 수동 주행 허용: 초기 `false`, `true` 재개, `false` 정지 |
-| `/intersection_state` | 구독 / `std_msgs/msg/Bool` | YOLO 교차로 모드: `true` 진입, `false`는 교차로·회전 방향·표지 ROI 함께 해제 |
-| `/left`, `/right` | 구독 / `std_msgs/msg/Bool` | `true`이면 해당 방향 ROI와 교차로 설정 선택. 주차 접근·고정 동작·출차 대기 중에는 무시하고 주차 출구는 별도 인계로 왼쪽 선택 |
+| `/intersection_state` | 구독 / `std_msgs/msg/Bool` | YOLO 교차로 모드: `true` 진입, `false` 해제 |
 | `/cmd_vel` | 발행 / `geometry_msgs/msg/Twist` | 선속도와 각속도 |
 | `/debug1` | 발행 / `sensor_msgs/msg/CompressedImage` | 선택한 알고리즘의 JPEG |
 | `/debug2` | 발행자 생성 / `sensor_msgs/msg/CompressedImage` | 주행 노드는 발행하지 않음; 표지판 검출 영상은 `mission_model`이 발행 |
@@ -242,46 +241,6 @@ ros2 topic pub --once /driving/detection std_msgs/msg/String "{data: basic_sat}"
 # Sobel + Basic_P 선택
 ros2 topic pub --once /driving/detection std_msgs/msg/String "{data: basic_sobel}"
 ```
-
-## 좌회전·우회전 교차로 설정
-
-`config/intersection.yaml`의 숫자를 수정하고 driving 또는 bringup을 재시작한다. 현재 로컬 `/home/atom5/turtlebot3_ws/bringup.launch.py`의 driving 노드가 설치된 `share/driving/config/intersection.yaml`을 읽는다. 주차 6단계의 `parking_sim.yaml`과는 다른 파일이다. ROS 노드 이름은 `driving`이며, 별도 이름으로 실행할 경우 YAML의 최상위 노드 이름도 맞춘다.
-
-```yaml
-driving:
-  ros__parameters:
-    intersection.left.v_max: 0.30
-    intersection.left.curvature_scale: 0.7
-    intersection.left.max_ang: 3.0
-    intersection.left.v_single: 0.8
-    intersection.right.v_max: 0.30
-    intersection.right.curvature_scale: 0.7
-    intersection.right.max_ang: 3.0
-    intersection.right.v_single: 0.8
-```
-
-| 방향별 항목 | 초기값(좌·우 동일) | 의미 |
-| --- | --- | --- |
-| `v_max` | `0.30` | 최대 속도 기준[m/s]. 커브에서는 추가 감속 |
-| `curvature_scale` | `0.7` | 목표점으로 향하는 곡률 배율. 값이 클수록 더 강하게 조향하되 내부 곡률 상한은 유지 |
-| `max_ang` | `3.0` | 평활화 전 각속도 상한[rad/s]. 실제 각속도를 이 값으로 고정하지 않음 |
-| `v_single` | `0.8` | 한쪽 차선만 보일 때 계산 속도의 배율[0~1] |
-
-네 값은 유한한0이상 실수이며 `v_single`은1이하여야 한다. 오른쪽에도 양수 크기를 넣으며 회전 방향은 ROI와 차선 목표점으로 결정한다. 잘못된 활성 방향 설정은 처리 오류로 정지하며 반대 방향 설정으로 대체하지 않는다. 현재 활성 방향의 설정은 매 YOLO 프레임에서 읽으므로 `ros2 param set /driving intersection.left.curvature_scale 1.0`처럼 시험할 수도 있다. 재시작 후 유지할 값은 YAML에 저장한다. 파일에 없는 값은 코드 기본값을 쓴다.
-
-`/left=true`·`/right=true`는 각각 ROI와 방향 설정을 선택하고 교차로 모드를 켠다. 표지의 `false`만으로 종료하지 않으며 마지막 `true`부터 `sign.roi_hold_sec`(기본30초) 뒤 또는 `/intersection_state=false`에서 종료한다. 종료 시 ROI·방향·교차로 상태를 함께 비워 일반 주행 설정으로 돌아간다. 방향 전환이나 교차로 진입·해제 자체로 추적·평활화를 초기화하지 않는다. 주차 모드가 바뀔 때는 기존 인계 초기화를 유지하면서 이전 방향·교차로 상태도 지운다. 주차 출구의 `intersection` 메시지는 왼쪽 설정을 선택한다. `parking.direction`의 주차 회전 방향과는 별개다.
-
-```bash
-cd /home/atom5/turtlebot3_ws
-source /opt/ros/galactic/setup.bash
-colcon build --packages-select driving --symlink-install
-source install/setup.bash
-# driving만 따로 실행할 때:
-ros2 run driving driving --ros-args --params-file \
-  /home/atom5/turtlebot3_ws/src/package_n/driving/config/intersection.yaml
-```
-
-빌드 뒤 현재 symlink 설치에서는 YAML 숫자만 고치면 재빌드 없이 노드를 재시작하여 반영한다. 복사 설치에서는 수정 후 다시 빌드한다. 인계·표지 수신 로그에 선택 방향과 네 설정값을 남긴다. 미검출은 방향별 교차로에서도 `pure_pursuit.v_lost` 직진을 사용하며, 주차 접근의 미검출 탐색은 별도의 `parking.search_*` 설정을 사용한다.
 
 ## 파라미터
 
@@ -304,7 +263,7 @@ ros2 run driving driving --ros-args --params-file \
 | `yolo_lane.single_offset` | `0.6` | YOLO 프레임마다 / 단일 차선으로부터 차선 폭의 몇 배 떨어질지 |
 | `yolo_lane.lane_width` | `355.0` | YOLO 프레임마다 / BEV 차선 폭 px, 양수 |
 | `pure_pursuit.v_max` | `0.40` | YOLO 프레임마다 / 최대 속도 m/s |
-| `pure_pursuit.v_max_intersection` | `0.30` | YOLO 프레임마다 / 방향 없는 외부 교차로 모드의 최대 속도 기준 m/s, 유한한 0 이상 값 |
+| `pure_pursuit.v_max_intersection` | `0.30` | YOLO 프레임마다 / 교차로 모드의 최대 속도 기준 m/s, 유한한 0 이상 값 |
 | `pure_pursuit.v_lost` | `0.05` | YOLO 프레임마다 / 미검출 직진 속도 m/s |
 | `pure_pursuit.k_lat` | `1.7` | YOLO 프레임마다 / 곡률 이득 |
 | `pure_pursuit.max_ang` | `3.0` | YOLO 프레임마다 / 평활화 전 각속도 제한 rad/s |
@@ -321,15 +280,13 @@ ros2 param set /driving basic.lane_mode false
 
 기하 파라미터를 바꾸면 다음 YOLO 프레임에서 `LanePath`를 다시 생성해 차선 추적을 초기화한다. 조향 계산은 프레임마다 값을 받아 기존 평활화 상태를 이어간다. 주행 정지·선택 전환·미검출·처리 오류에서는 조향 상태도 초기화한다.
 
-교차로 곡률 배율은 노드가 방향별 파라미터를 읽어 `LanePurePursuit.makeTwist(..., curvature_scale_intersection=...)`에 전달한다. 방향 없는 외부 교차로 모드는 기존 곡률 배율0.7과 공통 `pure_pursuit.v_max_intersection`·`pure_pursuit.max_ang`·`pure_pursuit.v_single`을 쓴다. 방향별 모드에서는 선택한 방향의 네 값이 우선하며 나머지 `k_lat`·`k_v`·`ang_smooth`·`v_lost`는 공통값이다.
+교차로 곡률 배율 `ang_scale_intersection = 0.7`은 원본처럼 내부 설정이며 `LanePurePursuit`에 둔다. ROS 파라미터는 최대 속도 `pure_pursuit.v_max_intersection`만 복원했다. 이 값은 교차로에서 일반 `v_max`를 대체하므로 `v_max`를 낮춰 시험할 때 교차로 속도도 별도로 조절한다.
 
 시작 전용 파라미터는 실행 중 변경을 거부한다. 재시작 시 `--ros-args -p yolo_lane.process_hz:=10.0`처럼 지정한다. YOLO/PurePursuit의 나머지 숫자 범위 검사는 처리 시점에 수행하므로 `ros2 param set` 성공이 계산 가능한 값을 보장하지는 않는다. 잘못된 값은 처리 오류로 정지하고 로그를 남긴다. 변경값은 재시작 시 유지되지 않는다.
 
 Basic_P의 `normal_angular_divisor` 등은 기존 소스 상수다. 이번 이식에서 ROS 파라미터로 바꾸지 않았다.
 
 ## 확인한 결과와 남은 범위
-
-좌우 교차로 설정 분리 후 Galactic/Python 3.8에서 주행 인계·주차 제어·표지 중지의 121개 검사를 통과했다. 양쪽 초기값의 기존 계산 일치, 좌우 독립 튜닝과 다음 프레임 반영, 잘못된 활성 설정의 정지, 미검출 직진, 주차 출구의 수신 순서, ROI 시간 종료·명시적 종료 후 일반 설정 복귀를 확인했다. 사용자 수정으로 활성화된 주차 미검출 탐색을 기존 인계 테스트에 반영했고, 주차 YAML 검사는 사용자 튜닝값을 허용하도록 수정했다. driving symlink 빌드와 별도 ROS 도메인의 DDS 검증도 통과했다. 설치된 YAML의 좌우 초기값, 이전 조향 구현과 같은 입력의 출력 일치, 실제 파라미터 서비스로 왼쪽 값을 바꿔도 오른쪽 출력이 유지되는지, 명시적 종료·ROI 시간 종료·주차 출구 왼쪽 인계를 확인했다. 모델 추론과 디버그 영상 생성은 대체했고 실제 로봇 속도 토픽에는 명령을 보내지 않았다.
 
 2026-11-04 Ubuntu ARM64 VM / ROS 2 Humble / Python 3.10에서 다음을 확인했다.
 
@@ -375,6 +332,6 @@ Basic_P의 `normal_angular_divisor` 등은 기존 소스 상수다. 이번 이�
 
 `maneuver`와 `halt`에서는 차선 검출·디버그는 계속하지만 정상·오류 경로의 차선 속도 출력을 막는다. 외부 `/lane_state` 허용 여부와 별도로 적용하며, 다른 모드는 기존 허용 조건을 따른다. parking은 다른 미션 속도를 중계하지 않고 고정동작·정지 때만 `/cmd_vel`을 직접 발행한다. 별도의 속도 중계 remap은 필요 없다.
 
-출차 중 좌회전 표지가 확인되면 parking이 `intersection`을 한 번 발행한다. driving은 주차 제한을 해제하고 `start_sign_roi('left')`로 교차로 상태·왼쪽 ROI·`intersection.left.*` 설정을 함께 선택한다. `/left`의 수신 순서 때문에 표지를 놓치지 않으며, 이후 일반 방향/교차로 메시지 처리는 유지한다. 빈 문자열은 일반 상태로 복원한다.
+출차 중 좌회전 표지가 확인되면 parking이 `intersection`을 한 번 발행한다. driving은 주차 제한을 해제하고 기존 교차로 상태 처리와 `start_sign_roi('left')`를 함께 호출한다. `/left`의 수신 순서 때문에 표지를 놓치지 않으며, 이후 일반 방향/교차로 메시지 처리는 유지한다. 빈 문자열은 일반 상태로 복원한다.
 
 `/lane_info`의 `mode`와 `parking_mode`는 진단용이다. parking은 흰선 판정에 `/camera`를 사용하며 `/lane_info`나 `/odom`은 구독하지 않는다. 실행·취소·원본 수치는 [주차 README](../mission/parking/README.md)를 참조한다.
