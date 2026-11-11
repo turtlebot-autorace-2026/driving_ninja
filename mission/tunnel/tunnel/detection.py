@@ -9,18 +9,34 @@ from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, Twist
+from rclpy.qos import QoSProfile, DurabilityPolicy
 
-INITIAL_POSE = [0.05, 0.05, 0.0, 1.0]
-GOAL_POSE = [1.42, 1.86, 0.72, 0.68]
+
+INITIAL_POSE = [-0.486, -0.696, -0.081, 0.997]
+GOAL_POSE = [0.745, 1.012, 0.734, 0.679]
 
 class TunnelDetection(Node):
     def __init__(self):
         super().__init__('tunnel_detection_node')
-        self.videoSubscriber = self.create_subscription(
-            CompressedImage,
-            '/camera',
-            self.videoSubscriber_callback,
-            10
+        # self.videoSubscriber = self.create_subscription(
+        #     CompressedImage,
+        #     '/camera',
+        #     self.videoSubscriber_callback,
+        #     10
+        # )
+
+        tunnel_qos = QoSProfile(
+            depth=1,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+
+
+
+        self.tunnelSubscriber = self.create_subscription(
+            Bool,
+            '/tunnel',
+            self.tunnelStart,
+            tunnel_qos
         )
         self.stateSubscriber = self.create_subscription(
             Bool,
@@ -54,7 +70,7 @@ class TunnelDetection(Node):
             10
         )
         
-        self.state = False
+        self.state = True
         self.first = True
         self._action_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         
@@ -169,6 +185,19 @@ class TunnelDetection(Node):
         cv2.destroyAllWindows()
         threading.Timer(2.0, self.publish_initial_pose).start()
         threading.Timer(4.0, self.publish_goal_pose).start()
+
+    def tunnelStart(self, msg):
+        if not self.state: return
+        if not msg.data: return
+        self.get_logger().info(f'Sign Detected')
+        def function():
+            msg = Bool()
+            msg.data = False
+            self.laneStatePublisher.publish(msg)
+            self.front_moving()
+            self.state = False
+        threading.Timer(2.0, function).start()
+
     
     def videoSubscriber_callback(self, msg):
         if not self.state: return
