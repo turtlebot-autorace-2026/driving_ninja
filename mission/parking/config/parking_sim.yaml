@@ -1,13 +1,33 @@
-# 원본 주차 수치. 시뮬레이션용 원호/odom 제어/속도 보정은 사용하지 않는다.
-# 실행 시 --params-file 또는 기존 launch의 parameters로 전달한다. 변경 후 노드를 재시작한다.
+# 주차 조정 파일: 숫자를 수정한 뒤 parking 노드/bringup을 재시작한다.
+# bringup.launch.py가 설치된 이 파일을 읽는다. 일반 실행에는 --params-file로 전달한다.
 parking_detect_node:
   ros__parameters:
-    direction: left
-    white_ratio: 0.60
-    # 인덱스: 0 후진, 1 회전1, 2 전진, 3 후진, 4 회전2, 5 전진.
-    # 선속도 단위 m/s, 각속도 rad/s, 시간 초.
-    linear_speeds: [-0.2, 0.0, 0.2, -0.2, 0.0, 0.2]
+    direction: right #right left
+    white_ratio: 0.04
+    # 배열의 같은 위치가 같은 단계다. 모든 배열은 반드시 숫자 6개를 유지한다.
+    # 기본 동작:             0후진   1회전1  2전진   3후진   4회전2  5전진
+    # 이동 목표 [m, 양수]. 회전 단계는 0.0.
+    distances:             [0.55,   0.0,    0.32,   0.28,   0.0,    0.70]
+    # 회전 목표 [도, 양수]. 직선 단계는 0.0. 두 회전 모두 direction 방향.
+    angles_deg:            [0.0,    89.4,   0.0,    0.0,    87.3,   0.0]
+    # 최대 선속도 [m/s]. 음수=후진, 양수=전진. 목표 근처에서는 자동 감속.
+    # 예: 첫 단계를 전진으로 바꾸려면 아래 첫 -0.2를 0.2로 바꾼다. distances는 양수 유지.
+    linear_speeds: [0.2, 0.0, 0.2, -0.2, 0.0, 0.2]
+    # 최대 회전 속도 [rad/s, 양수]. 회전 방향은 위 direction에서 지정.
     angular_speeds: [0.0, 1.2, 0.0, 0.0, 1.5, 0.0]
-    durations: [1.0, 1.3, 1.6, 1.6, 0.9, 1.0]
-    # 회전1: 1.2 × 1.3 = 1.56rad ≈ 89.4°, 회전2: 1.5 × 0.9 = 1.35rad ≈ 77.3°.
-    # 원본처럼 둘 다 direction 방향이며, 실제 각도가 아닌 시간으로 끝난다.
+
+    # 아래는 제어 조정값. 먼저 위의 거리·각도·속도를 조절한다.
+    distance_tolerance: 0.01     # 목표 거리 허용 오차 [m]
+    angle_tolerance_deg: 1.0    # 목표 회전 허용 오차 [도]
+    distance_kp: 1.0            # 남은 거리 → 선속도
+    angle_kp: 1.5               # 남은 각도(rad) → 각속도
+    heading_kp: 2.0             # 직선 구간의 시작 방향 유지 (0.0이면 끔)
+    min_linear_speed: 0.03     # 감속 중 최소 선속도 [m/s]
+    min_angular_speed: 0.10    # 감속 중 최소 회전 속도 [rad/s]
+    max_heading_angular: 0.4   # 직선 구간 방향 보정 최대 각속도 [rad/s]
+    stop_linear_tolerance: 0.01 # 실제 정지 확인 선속도 [m/s]
+    stop_angular_tolerance: 0.03 # 실제 정지 확인 각속도 [rad/s]
+    odom_timeout: 0.5          # odom이 이 시간 이상 오래되면 HALT [초]
+    stop_timeout: 3.0          # 정지 확인 최대 대기 [초]
+    # 단계별 최대 시간 [초]. 초과하면 HALT하며 다음 단계로 넘기지 않는다.
+    step_timeouts: [10.0, 10.0, 12.0, 12.0, 10.0, 10.0]

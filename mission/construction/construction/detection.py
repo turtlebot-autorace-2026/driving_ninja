@@ -41,9 +41,9 @@ class ConstructionDetection(Node):
         # self.declare_parameter('creep_stop_distance', 0.005)  # 목표 차선이 이 거리 안에 오면 직진 종료 [m]
         # self.declare_parameter('creep_max_distance', 0.6)   # 차선 없이 저속 직진할 최대 거리 [m]
         self.declare_parameter('kp', 3.0)                 # 차선 offset P 게인
-        self.declare_parameter('kh', 7.0) #1.5                   # 차선 각도 게인
+        self.declare_parameter('kh', 5.0) #1.5                   # 차선 각도 게인
         self.declare_parameter('max_angular', 2.0)          # 차선 추종 최대 각속도 [rad/s]
-        self.declare_parameter('turn_speed', 0.8)           # 제자리 회전 최대 각속도 [rad/s]
+        self.declare_parameter('turn_speed', 0.75)           # 제자리 회전 최대 각속도 [rad/s]
         self.declare_parameter('turn_min_speed', 0.5)       # 제자리 회전 최소 각속도 [rad/s]
         self.declare_parameter('turn_tolerance', 0.02)      # 회전 완료 허용 오차 [rad]
         self.declare_parameter('stop_linear_tolerance', 0.005)   # 회피 전 정지로 볼 /odom 선속도 [m/s]

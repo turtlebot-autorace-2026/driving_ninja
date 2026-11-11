@@ -141,16 +141,16 @@ class LanePurePursuit:
 
     def __init__(self):
         self.pursuit = PurePursuit(v_max=0.18, ang_smooth=0.6)
-        self.ang_scale_intersection = 0.7  # 원본 교차로 곡률 배율(ROS 파라미터 아님)
 
     def reset(self):
         self.pursuit.reset()
 
     def makeTwist(self, target, mode, v_max=0.18, v_lost=0.05, k_lat=1.0,
                   max_ang=1.2, k_v=0.6, ang_smooth=0.6, v_single=0.8,
-                  intersection=False, v_max_intersection=0.12):
+                  intersection=False, v_max_intersection=0.12,
+                  curvature_scale_intersection=0.7):
         values = (v_max, v_lost, k_lat, max_ang, k_v, ang_smooth, v_single,
-                  v_max_intersection)
+                  v_max_intersection, curvature_scale_intersection)
         if (not np.isfinite(values).all() or min(values) < 0
                 or ang_smooth > 1 or v_single > 1):
             raise ValueError('Invalid lane pursuit parameters.')
@@ -170,7 +170,7 @@ class LanePurePursuit:
         pursuit.lookahead = float(target[0])
         v, w = pursuit.compute_to(
             *target, v_max=v_max_intersection if intersection else None,
-            kappa_scale=self.ang_scale_intersection if intersection else 1.0,
+            kappa_scale=curvature_scale_intersection if intersection else 1.0,
             v_scale=1.0 if mode == 'both' else v_single,
         )
         return pursuit.to_twist(v, w)
