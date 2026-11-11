@@ -29,21 +29,24 @@ class Recorder:
 @pytest.fixture
 def node_factory(monkeypatch):
     parameters = {}
+    subscriptions = {}
     clock = [10.0]
     monkeypatch.setattr(Node, '__init__', lambda *a, **kw: None)
     monkeypatch.setattr(Node, 'declare_parameter', lambda self, name, value, *a: parameters.setdefault(name, value))
     monkeypatch.setattr(Node, 'get_parameter', lambda self, name: SimpleNamespace(value=parameters[name]))
     monkeypatch.setattr(Node, 'create_publisher', lambda *a, **kw: Recorder())
-    monkeypatch.setattr(Node, 'create_subscription', lambda *a, **kw: None)
+    monkeypatch.setattr(Node, 'create_subscription', lambda self, kind, topic, callback, qos:
+                        subscriptions.setdefault(topic, callback))
     monkeypatch.setattr(Node, 'create_timer', lambda *a, **kw: None)
     monkeypatch.setattr(Node, 'get_logger', lambda self: Mock())
     monkeypatch.setattr(Node, 'get_clock', lambda self: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=int(clock[0]*1e9))))
 
     def create(overrides=None):
         parameters.clear()
+        subscriptions.clear()
         parameters.update(overrides or {})
         n = ParkingDetection()
-        n.clock, n.parameters = clock, parameters
+        n.clock, n.parameters, n.recorded_subscriptions = clock, parameters, subscriptions
         return n
     return create
 
@@ -138,7 +141,7 @@ def test_sign_waits_for_permission_and_no_idle_or_approach_velocity(node):
 
 
 @pytest.mark.parametrize('direction', ['left', 'right'])
-def test_six_odom_movements_then_exit_and_left_sign(node_factory, direction):
+def test_six_odom_movements_automatically_handoff_left(node_factory, direction):
     n = node_factory({'direction': direction})
     approach(n)
     n.camera_callback(image(False))
@@ -159,33 +162,24 @@ def test_six_odom_movements_then_exit_and_left_sign(node_factory, direction):
             assert cmd.linear.x == 0 and sign*cmd.angular.z > 0
             assert abs(cmd.angular.z) <= n.motion_param('angular_speeds')[i]
         complete_step(n)
-    assert n.phase == 'EXIT' and n.mode_pub.messages[-1].data == 'exit'
+    assert n.phase == 'DONE' and n.mode_pub.messages[-1].data == 'intersection'
     count = len(n.velocity_pub.messages)
     n.tick()
     n.sign_callback(Bool(data=True))
-    assert len(n.velocity_pub.messages) == count and n.phase == 'EXIT'
-    n.left_callback(Bool(data=True))
+    n.state_callback(Bool(data=False))
+    assert len(n.velocity_pub.messages) == count and n.phase == 'DONE'
+    assert [m.data for m in n.mode_pub.messages] == ['', 'left', 'maneuver', 'intersection']
     assert n.phase == 'DONE' and n.mode_pub.messages[-1].data == 'intersection'
     assert json.loads(n.status_pub.messages[-1].data)['step'] == 6
 
 
-@pytest.mark.parametrize('phase', ['IDLE', 'APPROACH', 'PARKING'])
-def test_old_left_sign_is_not_reused_on_exit(node, phase):
-    if phase == 'IDLE':
-        node.left_callback(Bool(data=True))
-    approach(node)
-    if phase == 'APPROACH':
-        node.left_callback(Bool(data=True))
-    odom(node)
-    node.camera_callback(image())
-    if phase == 'PARKING':
-        node.left_callback(Bool(data=True))
+def test_parking_no_longer_subscribes_to_exit_sign(node):
+    assert '/left' not in node.recorded_subscriptions
+    assert '/parking' in node.recorded_subscriptions
+    start_parking(node)
     finish_movements(node)
-    assert node.phase == 'EXIT'
-    node.left_callback(Bool(data=False))
-    assert node.phase == 'EXIT'
-    node.left_callback(Bool(data=True))
     assert node.phase == 'DONE'
+    assert node.mode_pub.messages[-1].data == 'intersection'
 
 
 @pytest.mark.parametrize('step', range(6))
@@ -456,7 +450,7 @@ def test_closed_loop_finishes_with_acceleration_and_braking(node_factory, direct
         seen_steps.add(n.step)
         if n.phase != 'PARKING':
             break
-    assert n.phase == 'EXIT', [m.data for m in n.status_pub.messages]
+    assert n.phase == 'DONE', [m.data for m in n.status_pub.messages]
     assert seen_steps == set(range(7))
     assert abs(v) <= n.param('stop_linear_tolerance')
     assert abs(w) <= n.param('stop_angular_tolerance')
@@ -494,7 +488,7 @@ def test_each_parking_direction_uses_its_own_six_distances_angles_and_speeds(nod
         n.tick()
         assert n.phase == 'PARKING' and n.step == step and not n.settling
         complete_step(n)
-    assert n.phase == 'EXIT'
+    assert n.phase == 'DONE'
     assert json.loads(n.status_pub.messages[-1].data)['direction'] == direction
 
 
@@ -503,3 +497,59 @@ def test_default_motion_arrays_are_not_shared_between_directions(node):
     node.parameters['left.distances'][0] = .80
     assert node.motion_param('distances', 'right') == original
     assert node.motion_param('distances', 'left')[0] == .80
+
+
+def reach_last_target(n):
+    start_parking(n)
+    for _ in range(5):
+        complete_step(n)
+    x0, y0, yaw0 = n.step_origin
+    distance = math.copysign(n.motion_param('distances')[5], n.motion_param('linear_speeds')[5])
+    odom(n, x0+distance*math.cos(yaw0), y0+distance*math.sin(yaw0), v=.1)
+    n.tick()
+    assert n.step == 5 and n.settling and n.phase == 'PARKING'
+
+
+@pytest.mark.parametrize('direction', ['left', 'right'])
+def test_automatic_left_handoff_requires_fresh_final_stop_and_runs_once(node_factory, direction):
+    n = node_factory({'direction': direction})
+    reach_last_target(n)
+    assert n.mode_pub.messages[-1].data == 'maneuver'
+    n.tick()  # cached moving odometry cannot finish
+    odom(n, v=.02)
+    n.tick()
+    odom(n, w=.1)
+    n.tick()
+    assert n.phase == 'PARKING' and n.step == 5
+    events = []
+    n.velocity_pub.publish = lambda msg: events.append(('velocity', msg))
+    n.mode_pub.publish = lambda msg: events.append(('mode', msg.data))
+    n.status_pub.publish = lambda msg: events.append(('status', json.loads(msg.data)))
+    odom(n)
+    n.tick()
+    assert n.phase == 'DONE' and n.step == 6
+    assert [event[0] for event in events] == ['velocity', 'mode', 'status']
+    assert events[0][1] == Twist() and events[1][1] == 'intersection'
+    assert events[2][1]['phase'] == 'DONE' and 'fixed left' in events[2][1]['reason']
+    count = len(events)
+    n.tick()
+    n.sign_callback(Bool(data=True))
+    n.state_callback(Bool(data=False))
+    assert len(events) == count
+
+
+@pytest.mark.parametrize('action', ['external_stop', 'manual_cancel', 'odom_dropout'])
+def test_stop_during_final_settling_never_releases_to_left_follow(node, action):
+    reach_last_target(node)
+    if action == 'external_stop':
+        node.lane_state_callback(Bool(data=False))
+    elif action == 'manual_cancel':
+        node.state_callback(Bool(data=False))
+    else:
+        node.clock[0] += node.param('odom_timeout') + .1
+        node.tick()
+    odom(node)
+    node.tick()
+    assert node.phase == 'HALT'
+    assert node.mode_pub.messages[-1].data == 'halt'
+    assert all(m.data != 'intersection' for m in node.mode_pub.messages)

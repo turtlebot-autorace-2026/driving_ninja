@@ -194,3 +194,57 @@ def test_invalid_duplicate_and_stop_modes(node):
     assert node.lane_driving_enabled()
     node.right_sign_callback(Bool(data=True))
     assert node.roi_side == 'right'
+
+
+def test_parking_exit_left_follow_expires_after_five_seconds(node, monkeypatch):
+    node.lane_state_callback(Bool(data=True))
+    node.parking_mode_callback(String(data='maneuver'))
+    node.parking_mode_callback(String(data='intersection'))
+    assert node.get_parameter('parking.exit_follow_sec').value == 5.
+    assert node.parking_exit_turn_since == 10.
+    monkeypatch.setattr(node, 'now_seconds', lambda: 14.999)
+    node.check_sign_roi_timeout()
+    assert node.roi_side == 'left' and node.is_intersection
+    # Neither signs nor a duplicate handoff can extend the parking window.
+    node.left_sign_callback(Bool(data=True))
+    node.right_sign_callback(Bool(data=True))
+    node.parking_mode_callback(String(data='intersection'))
+    assert node.roi_side == 'left' and node.parking_exit_turn_since == 10.
+    monkeypatch.setattr(node, 'now_seconds', lambda: 15.)
+    node.check_sign_roi_timeout()
+    assert node.roi_side is None and not node.is_intersection
+    assert node.parking_exit_turn_since is None
+    assert node.lane_driving_enabled()
+    prepare_yolo(node, target=(.32, .1), mode='both')
+    process_frame(node)
+    assert node.yolo_lane.detectLane.call_args.kwargs['roi_side'] is None
+    assert node.pure_pursuit.pursuit.v_max == .40
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_ordinary_sign_roi_keeps_its_thirty_second_policy(node, monkeypatch, side):
+    node.intersection_state_callback(Bool(data=True))
+    getattr(node, side + '_sign_callback')(Bool(data=True))
+    assert node.parking_exit_turn_since is None
+    assert node.get_parameter('sign.roi_hold_sec').value == 30.
+    monkeypatch.setattr(node, 'now_seconds', lambda: 15.)
+    node.check_sign_roi_timeout()
+    assert node.roi_side == side and node.is_intersection
+    monkeypatch.setattr(node, 'now_seconds', lambda: 40.)
+    node.check_sign_roi_timeout()
+    assert node.roi_side is None and node.is_intersection  # original external-state policy
+
+
+@pytest.mark.parametrize('mode', ['', 'left', 'maneuver', 'exit', 'halt'])
+def test_new_parking_mode_cancels_the_exit_window(node, mode):
+    node.parking_mode_callback(String(data='intersection'))
+    node.parking_mode_callback(String(data=mode))
+    assert node.parking_exit_turn_since is None
+    assert node.roi_side is None and not node.is_intersection
+
+
+def test_external_intersection_stop_ends_parking_exit_roi_early(node):
+    node.parking_mode_callback(String(data='intersection'))
+    node.intersection_state_callback(Bool(data=False))
+    assert node.parking_exit_turn_since is None
+    assert node.roi_side is None and not node.is_intersection

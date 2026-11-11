@@ -46,6 +46,7 @@ class DrivingNode(Node):
         # lane_state와 관계없이 적용한다(공사 구간은 lane_state=False로 /lane_info만 쓴다).
         self.roi_half: Optional[str] = None   # None | 'left' | 'right'
         self.parking_mode = ''  # '' | left | maneuver | exit | intersection | halt
+        self.parking_exit_turn_since: Optional[float] = None
 
         # 계산 객체를 재사용한다. 무거운 YOLO 모델은 첫 처리 때 한 번 읽는다.
 
@@ -156,6 +157,10 @@ class DrivingNode(Node):
         self.declare_parameter('parking.approach_roi_top_row', 250)  # BEV y[250,480)
         self.declare_parameter('parking.search_speed', 0.04)        # 전진 m/s
         self.declare_parameter('parking.search_angular', 0.55)       # 왼쪽 rad/s, 고정 회전각 아님
+        self.declare_parameter('parking.exit_follow_sec', 5.0, ParameterDescriptor(read_only=True))
+        exit_follow_sec = self.get_parameter('parking.exit_follow_sec').value
+        if not math.isfinite(exit_follow_sec) or exit_follow_sec <= 0:
+            raise ValueError('parking.exit_follow_sec must be finite and positive.')
 
         # 회전 표지판을 본 뒤 방향 ROI를 유지하는 시간 [s]
         self.declare_parameter('sign.roi_hold_sec', 30.0)
@@ -324,6 +329,10 @@ class DrivingNode(Node):
             self.get_logger().info('Lane driving enabled.')
 
     def intersection_state_callback(self, msg: Bool):
+        if not msg.data and self.parking_exit_turn_since is not None:
+            # 주차 출구의 명시적 종료만 고정 좌회전 ROI도 함께 해제한다.
+            self.parking_exit_turn_since = None
+            self.roi_side = None
         if self.is_intersection == msg.data:
             return
         self.is_intersection = msg.data
@@ -332,11 +341,13 @@ class DrivingNode(Node):
         self.get_logger().info(state + ' Intersection Mode')
 
     def left_sign_callback(self, msg: Bool):
-        if msg.data and self.parking_mode in ('', 'intersection'):
+        if (msg.data and self.parking_mode in ('', 'intersection')
+                and self.parking_exit_turn_since is None):
             self.start_sign_roi('left')
 
     def right_sign_callback(self, msg: Bool):
-        if msg.data and self.parking_mode in ('', 'intersection'):
+        if (msg.data and self.parking_mode in ('', 'intersection')
+                and self.parking_exit_turn_since is None):
             self.start_sign_roi('right')
 
     def parking_mode_callback(self, msg: String):
@@ -346,6 +357,8 @@ class DrivingNode(Node):
             return
         if mode == self.parking_mode:
             return
+        if self.parking_exit_turn_since is not None:
+            self.intersection_state_callback(Bool(data=False))
         self.parking_mode = mode
         # Do not carry an old turn sign/construction ROI or tracker across handoff.
         self.roi_side = None
@@ -354,9 +367,10 @@ class DrivingNode(Node):
         if mode in ('maneuver', 'halt'):
             self.cmd_vel_pub.publish(Twist())
         elif mode == 'intersection':
-            # 출구의 같은 /left 이벤트가 주차 모드에서 먼저 무시됐어도 놓치지 않는다.
+            # 주차 완료는 표지판을 기다리지 않고 정해진 시간 동안 왼쪽을 추종한다.
             self.intersection_state_callback(Bool(data=True))
-            self.start_sign_roi('left')
+            self.start_sign_roi('left', self.get_parameter('parking.exit_follow_sec').value)
+            self.parking_exit_turn_since = self.roi_side_since
         self.get_logger().info('Parking lane mode: ' + (mode or 'normal'))
 
     def lane_roi_callback(self, msg: String):
@@ -373,14 +387,20 @@ class DrivingNode(Node):
         """노드의 ROS 시계(use_sim_time=false면 시스템 ROS 시간) [s]."""
         return self.get_clock().now().nanoseconds * 1e-9
 
-    def start_sign_roi(self, side: str):
+    def start_sign_roi(self, side: str, hold_sec=None):
         """표지판이 True가 된 시점부터 방향 ROI를 사용한다. 다시 True가 되면 그 시점부터 다시 센다."""
         self.roi_side = side
         self.roi_side_since = self.now_seconds()
-        hold = self.get_parameter('sign.roi_hold_sec').value
+        hold = self.get_parameter('sign.roi_hold_sec').value if hold_sec is None else hold_sec
         self.get_logger().info(f'Turn sign {side}: lane ROI from center to the {side} edge for {hold:.0f} s')
 
     def check_sign_roi_timeout(self):
+        if self.parking_exit_turn_since is not None:
+            if (self.now_seconds() - self.parking_exit_turn_since
+                    >= self.get_parameter('parking.exit_follow_sec').value):
+                self.intersection_state_callback(Bool(data=False))
+                self.get_logger().info('Parking exit left follow finished: normal lane following')
+            return
         if self.roi_side is None:
             return
         if self.now_seconds() - self.roi_side_since >= self.get_parameter('sign.roi_hold_sec').value:

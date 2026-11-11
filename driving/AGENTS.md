@@ -32,7 +32,7 @@
 
 - 주차는 `/parking/lane_mode`로 기본 ROI의 왼쪽 절반을 선택한다. `maneuver`/`halt`일 때는 외부 `/lane_state=True`여도 `lane_driving_enabled()`가 차선 속도 출력을 막으며 검출·디버그는 유지한다. 주차가 다른 미션의 속도를 중계하지 않는다.
 - 진입 `left` 모드에서만 ROI 상단을 `parking.approach_roi_top_row`(기본250행)로 바꾼다. 사용자가 주석을 해제한 미검출 왼쪽 탐색은 `parking.search_speed`/`parking.search_angular`로 명령을 덮어쓴다. 현재 기본값은0.04m/s·0.55rad/s다. 차선 재검출 시 기존 추종으로 돌아간다. 출차·교차로 미검출은 공통 `pure_pursuit.v_lost` 직진이다. 요청 없이 탐색을 다시 비활성화하지 않는다. 영상/추론 오류는 기존대로 정지한다.
-- 주차 출구의 `intersection` 모드는 주차 제한 해제와 기존 교차로·좌회전 처리를 함께 호출한다. 주차의 시간 기반6단계나 표지 판단을 driving 안에 구현하지 않는다.
+- parking은 odom 기반6단계와 마지막 정지를 확인한 뒤 표지 대기 없이 `intersection`을 발행한다. driving은 기존 좌회전 ROI·교차로 추종을 `parking.exit_follow_sec`(기본5초, 시작 전용) 동안 적용하고, 이후 주차 출구 ROI와 교차로 상태를 함께 해제한다. 이 기간 좌·우 표지나 중복 인계로 시간을 연장하거나 방향을 바꾸지 않는다. 일반 표지의30초 ROI·외부 교차로 상태 유지 방식은 보존한다. 명시적 교차로 False나 새 주차 모드는 출구 추종도 해제한다. 주차6단계 자체는 driving에 복제하지 않는다.
 
 - 미션 노드는 사용자가 지정한 외부 저장소의 패키지를 사용한다. 이 패키지에 미션 구현·실행 엔트리·미션 전용 디버그 발행을 복제하지 않는다.
 - `/lane_state`와 `/intersection_state` 구독을 통해 외부와 연결한다. 현재 `/lane_mode`와 `/traffic_light_state`를 구독하지 않으며 이식되지 않은 방향 제어를 지원한다고 설명하지 않는다.

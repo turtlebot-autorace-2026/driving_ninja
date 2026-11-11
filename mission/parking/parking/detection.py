@@ -1,4 +1,4 @@
-"""P sign -> left half ROI -> white line -> six movements -> left sign handoff."""
+"""P sign -> left half ROI -> white line -> six movements -> automatic left handoff."""
 import json
 import math
 import signal
@@ -80,7 +80,7 @@ class ParkingDetection(Node):
                       or w < self.param('min_angular_speed')):
                     raise ValueError('Invalid ' + side + ' turn at step ' + str(i))
 
-        self.phase = 'IDLE'  # IDLE -> APPROACH -> PARKING -> EXIT -> DONE; cancel -> HALT
+        self.phase = 'IDLE'  # IDLE -> APPROACH -> PARKING -> DONE; cancel -> HALT
         self.parking_requested = False
         self.lane_enabled = False
         self.step = 0
@@ -102,7 +102,6 @@ class ParkingDetection(Node):
         self.mode_pub = self.create_publisher(String, '/parking/lane_mode', latched)
         self.status_pub = self.create_publisher(String, '/parking/status', latched)
         self.create_subscription(Bool, '/parking', self.sign_callback, latched)
-        self.create_subscription(Bool, '/left', self.left_callback, latched)
         self.create_subscription(Bool, '/parking_state', self.state_callback, 10)
         self.create_subscription(Bool, '/lane_state', self.lane_state_callback, 10)
         self.create_subscription(CompressedImage, '/bev', self.camera_callback,
@@ -125,7 +124,7 @@ class ParkingDetection(Node):
 
     def set_phase(self, phase, reason):
         mode = {'IDLE': '', 'APPROACH': 'left', 'PARKING': 'maneuver',
-                'EXIT': 'exit', 'DONE': 'intersection', 'HALT': 'halt'}[phase]
+                'DONE': 'intersection', 'HALT': 'halt'}[phase]
         self.mode_pub.publish(String(data=mode))
         # 차선 출력 차단을 먼저 알리고 정지한 뒤 상태/단계와 로그를 갱신한다.
         if phase in ('PARKING', 'HALT'):
@@ -193,7 +192,7 @@ class ParkingDetection(Node):
         # /lane_state는 외부 허용 입력이다. 주차가 같은 토픽에 False를 재발행하지
         # 않고 maneuver 모드로 차선 출력만 막으므로 외부 정지와 구분할 수 있다.
         self.lane_enabled = msg.data
-        if not msg.data and self.phase in ('APPROACH', 'PARKING', 'EXIT'):
+        if not msg.data and self.phase in ('APPROACH', 'PARKING'):
             self.halt('external lane stop')
         elif msg.data:
             self.start_if_ready()
@@ -203,11 +202,6 @@ class ParkingDetection(Node):
             self.sign_callback(msg)
         elif self.phase != 'DONE':
             self.halt('manual cancel')
-
-    def left_callback(self, msg):
-        # 진입 전에 본 표지는 기억하지 않고 출차 때 재개한 새 검출만 사용한다.
-        if self.phase == 'EXIT' and msg.data:
-            self.finish()
 
     def camera_callback(self, msg):
         if self.phase != 'APPROACH' or not self.lane_enabled:
@@ -237,9 +231,8 @@ class ParkingDetection(Node):
 
 
     def finish(self):
-        # 한 메시지로 주차 ROI 해제 + 기존 intersection/좌회전 처리를 호출한다.
-        # /left가 driving에 먼저 도착해 무시됐어도 인계가 누락되지 않는다.
-        self.set_phase('DONE', 'exit left sign; hand off to intersection')
+        # 마지막 정지를 확인한 뒤 표지 입력 없이 기존 좌회전 처리로 인계한다.
+        self.set_phase('DONE', 'six odometry movements complete; fixed left turn handoff')
 
     def halt(self, reason):
         if self.phase == 'HALT':
@@ -248,11 +241,11 @@ class ParkingDetection(Node):
 
     def tick(self):
         now = self.now()
-        if now < self.last_tick and self.phase in ('APPROACH', 'PARKING', 'EXIT'):
+        if now < self.last_tick and self.phase in ('APPROACH', 'PARKING'):
             self.halt('clock reset; restart parking node')
         self.last_tick = now
         if self.phase != 'PARKING':
-            return  # 대기/접근/출차/완료 때 다른 노드의 속도를 덮어쓰지 않는다.
+            return  # 대기/접근/완료 때 다른 노드의 속도를 덮어쓰지 않는다.
         if (self.odom_time is None or now - self.odom_time > self.param('odom_timeout')
                 or abs(now - self.odom_stamp * 1e-9) > self.param('odom_timeout')):
             self.halt('odometry missing or stale')
@@ -275,7 +268,7 @@ class ParkingDetection(Node):
             if self.step_origin is not None:
                 self.step += 1
                 if self.step == 6:
-                    self.set_phase('EXIT', 'six odometry movements complete; follow left half ROI')
+                    self.finish()
                     return
             self.step_origin = (*self.position, self.unwrapped_yaw)
             self.step_started = now
@@ -332,7 +325,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if rclpy.ok() and node.phase in ('APPROACH', 'PARKING', 'EXIT'):
+        if rclpy.ok() and node.phase in ('APPROACH', 'PARKING'):
             node.halt('node shutdown')
         node.destroy_node()
         if rclpy.ok():

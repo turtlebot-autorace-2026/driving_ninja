@@ -314,24 +314,21 @@ Basic_P의 `normal_angular_divisor` 등은 기존 소스 상수다. 이번 이�
 
 ## 주차 노드와 제어 인계
 
-`mission/parking`은 P 표지 → 가까운 왼쪽 절반 ROI로 접근 → 흰 정지선 → odom 기반6단계 → 좌회전 표지 인계 순서로 동작한다. 유효 차선이 있으면 기존 YOLO/Pure Pursuit로 추종한다.
+`mission/parking`은 P표지 → 가까운 왼쪽 절반 ROI로 접근 → 흰 정지선 → odom 기반6단계 → 고정 좌회전 인계 순서로 동작한다. 마지막 목표 도달 후 실제 정지를 확인하면 `/parking/lane_mode=intersection`을 한 번 발행한다. 주차 완료 후 `/left` 표지를 기다리는 단계는 없다. 왼쪽·오른쪽 주차의6단계 설정은 parking YAML에서 선택하며, 완료 이후의 진행은 둘 다 왼쪽이다.
 
-`/parking/lane_mode` String의 `left`, `maneuver`, `exit`는 `roi_side=None, roi_half='left'`로 공사와 동일한 왼쪽 가로 범위를 사용한다. `sign.roi_height_scale`의 위쪽 확장은 적용하지 않는다. `/lane_state=True`가 공사 ROI를 초기화해도 주차 ROI는 유지된다.
+`left` 접근 모드는 `roi_side=None, roi_half='left'`와 상단250행을 사용한다. 미검출이면 사용자가 활성화한 `parking.search_speed`·`parking.search_angular` 탐색 명령을 적용하고, 재검출되면 기존 추종으로 돌아간다. `maneuver`·`halt`에서는 검출·디버그를 유지하고 차선 속도 출력을 차단한다. `/lane_state` 주행 허용 조건도 함께 적용한다.
 
-진입 `left` 모드에서만 상단을250행으로 내려 가까운 영역 x[76,326),y[250,480)를 본다. 사용자 요청으로 미검출 왼쪽 탐색 코드는 주석 처리했다. 유효 차선을 놓치면 `pure_pursuit.v_lost`(기본 .05m/s)로 직진하고 각속도는0이다. 다음 프레임에서 차선이 검출되면 기존 추종으로 돌아간다. 출차 `exit`는 기존 상단150행을 사용하며 미검출 시 같은 직진 정책을 따른다. 영상/추론 오류는 기존대로 정지한다.
+주차 완료의 `intersection` 메시지는 주차 제한을 풀고 기존 교차로 상태와 왼쪽 방향 ROI를 적용한다. 이때만 별도의 `parking.exit_follow_sec`(기본5초) 타이머를 시작한다.5초가 지나면 주차 출구 ROI와 교차로 상태를 함께 해제하여 일반 차선 추종으로 복귀한다. 이 기간의 좌·우 표지와 중복 인계는 방향이나 시작 시각을 바꾸지 않는다. 명시적 `/intersection_state=false` 또는 새 주차 모드는 출구 추종을 일찍 해제할 수 있다.
 
-진입 전용 설정은 `/driving` 파라미터이며 프레임마다 읽는다. 코드의 기본값과 단위는 다음과 같다.
-
-| 이름 | 기본값 | 의미 |
+| driving 파라미터 | 기본값 | 적용 시점·의미 |
 | --- | --- | --- |
-| `parking.approach_roi_top_row` | `250` | BEV ROI 상단, 0~479. 커질수록 세로 높이가 줄어든다. |
-| `parking.search_speed` | `0.04` | 주차 진입 중 미검출 탐색 선속도[m/s], YOLO 프레임마다 |
-| `parking.search_angular` | `0.55` | 주차 진입 중 미검출 탐색 좌회전 각속도[rad/s], YOLO 프레임마다 |
+| `parking.approach_roi_top_row` | `250` | YOLO 프레임마다. 접근 모드의 BEV ROI 상단 |
+| `parking.search_speed` | `0.04` | YOLO 프레임마다. 접근 미검출 탐색 선속도[m/s] |
+| `parking.search_angular` | `0.55` | YOLO 프레임마다. 접근 미검출 좌회전 각속도[rad/s] |
+| `parking.exit_follow_sec` | `5.0` | 시작 시 읽기 전용. 주차 완료 뒤 왼쪽 ROI·교차로 추종 유지 시간[초], 유한한 양수 |
 
-주차ROI 값은 기존 검출기의 범위 검사를 따른다. 출발 가속 제한은 미검출 직진 명령에도 적용하며 `debug1`에 제한 후 속도를 표시한다. 미검출 직진 속도는 `pure_pursuit.v_lost`를 조절한다.
+5초는 ROS 시계 기준으로 인계 메시지를 받은 시점부터 센다. 기존 단일 executor의 동기 추론 때문에 타이머 콜백 실행은 지연될 수 있다. 이 제어는 차선 목표점을 따라가며, 고정 각속도나 고정90도 회전을 명령하지 않는다. 미검출은 기존 `pure_pursuit.v_lost` 직진을 쓴다. 일반 `/left`·`/right` 표지의 `sign.roi_hold_sec`(기본30초)와 외부 교차로 상태 정책은 변경하지 않는다. `exit` 모드는 이전 외부 노드 호환용으로 계속 받지만 현재 parking은 발행하지 않는다.
 
-`maneuver`와 `halt`에서는 차선 검출·디버그는 계속하지만 정상·오류 경로의 차선 속도 출력을 막는다. 외부 `/lane_state` 허용 여부와 별도로 적용하며, 다른 모드는 기존 허용 조건을 따른다. parking은 다른 미션 속도를 중계하지 않고 고정동작·정지 때만 `/cmd_vel`을 직접 발행한다. 별도의 속도 중계 remap은 필요 없다.
+출발 가속 제한은 주차 인계 후에도 적용하고 `debug1`에 최종 속도를 표시한다. parking이 `/cmd_vel`을 직접 발행하는 것은6단계 동작·정지·취소 때다. 완료 이후에는 driving이 속도를 계산한다. parking의 흰선 입력은 `/bev`,6단계 진행 입력은 `/odom`이며 `/lane_info`는 구독하지 않는다. 실행·취소·방향별 수치는 [주차 README](../mission/parking/README.md)를 참조한다.
 
-출차 중 좌회전 표지가 확인되면 parking이 `intersection`을 한 번 발행한다. driving은 주차 제한을 해제하고 기존 교차로 상태 처리와 `start_sign_roi('left')`를 함께 호출한다. `/left`의 수신 순서 때문에 표지를 놓치지 않으며, 이후 일반 방향/교차로 메시지 처리는 유지한다. 빈 문자열은 일반 상태로 복원한다.
-
-`/lane_info`의 `mode`와 `parking_mode`는 진단용이다. parking은 흰선 판정에 `/camera`를 사용하며 `/lane_info`나 `/odom`은 구독하지 않는다. 실행·취소·원본 수치는 [주차 README](../mission/parking/README.md)를 참조한다.
+자동 좌회전 인계·주차 전용5초 유지 변경은 Galactic/Python 3.8의 관련123개 검사와 driving·parking 빌드를 통과했다. 표지판 없는 완료 인계, 마지막 정지 확인,5초 경계, 중복 표지·인계의 시간 연장 방지, 일반 표지30초 유지, 정지·취소·odom 오류를 확인했다. 설치된 parking·driving을 별도 ROS 도메인에서 함께 실행하여 좌·우 주차 모두 표지 입력 없는 좌회전 인계, 약5초 후 일반 추종 복귀, 중간 표지의 시간 연장 방지, 일반 표지30초 정책 유지를 DDS로 확인했다. 실제 로봇의 속도 토픽에는 연결하지 않았다.
