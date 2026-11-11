@@ -42,6 +42,9 @@ class DrivingNode(Node):
         # sign.roi_hold_sec 뒤 기본 ROI로 복구한다.
         self.roi_side: Optional[str] = None   # None | 'left' | 'right'
         self.roi_side_since = 0.0             # ROS 시간 [s]
+        # 공사 구간(/construction/lane_roi): 회피 복귀 후 ROI 폭의 왼쪽/오른쪽 절반만 본다.
+        # lane_state와 관계없이 적용한다(공사 구간은 lane_state=False로 /lane_info만 쓴다).
+        self.roi_half: Optional[str] = None   # None | 'left' | 'right'
 
         # 계산 객체를 재사용한다. 무거운 YOLO 모델은 첫 처리 때 한 번 읽는다.
 
@@ -111,12 +114,15 @@ class DrivingNode(Node):
             Bool, 'left', self.left_sign_callback, sign_qos)
         self.right_sign_subscription = self.create_subscription(
             Bool, 'right', self.right_sign_callback, sign_qos)
+        # construction 노드도 latched로 발행한다. 값: 'left' | 'right' | ''(전체 ROI)
+        self.lane_roi_subscription = self.create_subscription(
+            String, '/construction/lane_roi', self.lane_roi_callback, sign_qos)
         ## 파라미터
         self.declare_parameter('basic_sat.beta', -5080.1)   # for basic_sat
         self.declare_parameter('basic.lane_mode', True)   # for basic_sat, basic_sobel & basic_p
 
         default_model = os.path.join(
-            get_package_share_directory('driving'), 'models', 'lane_yolo26n_seg.pt',
+            get_package_share_directory('driving'), 'models', 'lane_yolo26n_seg.onnx',
         )
         # 이 세 값은 시작할 때 적용한다. 실행 중 set은 거부하여 미반영을 숨기지 않는다.
         self.declare_parameter('yolo_lane.model_path', default_model,
@@ -217,7 +223,8 @@ class DrivingNode(Node):
         try:
             if self.yolo_lane is None:
                 self.yolo_lane = YoloLane(p('yolo_lane.model_path'), p('yolo_lane.device'))
-                self.get_logger().info('YOLO lane model loaded: ' + p('yolo_lane.model_path'))
+                backend = getattr(self.yolo_lane.model, 'providers', 'ultralytics')
+                self.get_logger().info(f'YOLO lane model loaded ({backend}): ' + p('yolo_lane.model_path'))
             target, mode = self.yolo_lane.detectLane(
                 msg, conf=p('yolo_lane.conf'), imgsz=p('yolo_lane.imgsz'),
                 camera_height=p('yolo_lane.camera_height'),
@@ -229,6 +236,7 @@ class DrivingNode(Node):
                 # 주행 대기 중에는 외부 미션이 /lane_info를 쓰므로 표지판 ROI로 시야를 자르지 않는다.
                 roi_side=self.roi_side if self.lane_enabled else None,
                 roi_height_scale=p('sign.roi_height_scale'),
+                roi_half=self.roi_half,
             )
             yellow, white = self.yolo_lane.lane.lane_offsets()
             yellow_heading, white_heading = self.yolo_lane.lane.lane_headings()
@@ -270,6 +278,10 @@ class DrivingNode(Node):
             self.reset_yolo()
             self.get_logger().info('Lane driving stopped.')
         else:
+            if self.roi_half is not None:
+                # 주행 재개 시 공사 구간 ROI가 남지 않게 한다(토픽 간 수신 순서가 보장되지 않음).
+                self.roi_half = None
+                self.get_logger().info('Lane driving enabled: construction half ROI cleared')
             if not was_enabled:
                 # 대기 중 받은 미처리 영상은 버리고 재개 이후 수신한 영상부터 주행한다.
                 # 추적·평활화는 유지한다. 반복 True에서는 처리 대기 영상도 유지한다.
@@ -291,6 +303,16 @@ class DrivingNode(Node):
     def right_sign_callback(self, msg: Bool):
         if msg.data:
             self.start_sign_roi('right')
+
+    def lane_roi_callback(self, msg: String):
+        half = msg.data.strip().lower() or None
+        if half not in (None, 'left', 'right'):
+            self.get_logger().warning(f"Ignoring /construction/lane_roi '{msg.data}' (left | right | '')")
+            return
+        if half == self.roi_half:
+            return
+        self.roi_half = half
+        self.get_logger().info(f'Construction lane ROI: {half or "full"}')
 
     def now_seconds(self) -> float:
         """노드의 ROS 시계(use_sim_time=false면 시스템 ROS 시간) [s]."""

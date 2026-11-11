@@ -3,7 +3,8 @@
   ros2 launch mission_model mission_model.launch.py              # real robot: front camera on /camera2
   ros2 launch mission_model mission_model.launch.py sim:=true    # Gazebo: /front_camera/image_raw -> /camera2
 
-ultralytics is needed, so the node runs with `python` (default: ~/autorace/yolo_venv/bin/python
+The default .onnx model needs only onnxruntime (on the Jetson: onnxruntime-gpu for JetPack 5);
+a .pt model needs ultralytics. The node runs with `python` (default: ~/autorace/yolo_venv/bin/python
 if it exists, otherwise python3).
 """
 import os
@@ -33,8 +34,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('sim', default_value='false',
                               description='true: convert the Gazebo front camera to /camera2'),
-        DeclareLaunchArgument('python', default_value='', description='python with ultralytics'),
-        DeclareLaunchArgument('device', default_value='', description="'' auto, 'cpu', '0'"),
+        DeclareLaunchArgument('python', default_value='', description='python with onnxruntime (.onnx) or ultralytics (.pt)'),
+        DeclareLaunchArgument('device', default_value='', description="'' auto, 'cpu', '0', 'cuda', 'trt' (trt/cuda: .onnx only)"),
         DeclareLaunchArgument('show', default_value='false', description='cv2 debug window'),
         Node(
             package='camera_ros',

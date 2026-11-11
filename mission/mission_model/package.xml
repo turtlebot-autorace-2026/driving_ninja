@@ -11,7 +11,7 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>ament_index_python</depend>
-  <!-- pip: ultralytics (YOLO11n mission model) -->
+  <!-- pip: onnxruntime (onnxruntime-gpu on Jetson) for the .onnx model, ultralytics only for .pt -->
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>camera_ros</exec_depend>

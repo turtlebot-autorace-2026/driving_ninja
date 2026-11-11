@@ -89,6 +89,7 @@ class LanePath:
         self.mode = 'lost'            # both | yellow_only | white_only | lost
         self.roi_side = None          # None | 'left' | 'right' (turn sign: half ROI)
         self.roi_height_scale = 1.0   # turn sign: ROI height x this (extended upward)
+        self.roi_half = None          # None | 'left' | 'right' (construction: half of the current ROI width)
         self.rows = self.cfg.rows     # rows sampled in the last update (bottom -> top)
         self.prev_x_la = None         # lookahead point of the previous frame (lane continuity)
 
@@ -140,11 +141,18 @@ class LanePath:
         'right': robot center line ~ image right edge, None: robot_x +- roi_half_width.'''
         cfg = self.cfg
         if self.roi_side == 'left':
-            return 0, int(cfg.robot_x)
-        if self.roi_side == 'right':
-            return int(cfg.robot_x), BEV_W
-        x0 = int(max(0, cfg.robot_x - cfg.roi_half_width))
-        x1 = int(min(BEV_W, cfg.robot_x + cfg.roi_half_width))
+            x0, x1 = 0, int(cfg.robot_x)
+        elif self.roi_side == 'right':
+            x0, x1 = int(cfg.robot_x), BEV_W
+        else:
+            x0 = int(max(0, cfg.robot_x - cfg.roi_half_width))
+            x1 = int(min(BEV_W, cfg.robot_x + cfg.roi_half_width))
+        # roi_half: keep only the left / right half of the range above (split at its middle)
+        mid = (x0 + x1) // 2
+        if self.roi_half == 'left':
+            return x0, mid
+        if self.roi_half == 'right':
+            return mid, x1
         return x0, x1
 
     def roi_top(self):
@@ -160,16 +168,18 @@ class LanePath:
         roi[self.roi_top():, x0:x1] = True
         return roi
 
-    def update(self, detections, roi_side=None, roi_height_scale=1.0):
+    def update(self, detections, roi_side=None, roi_height_scale=1.0, roi_half=None):
         '''
         detections: list of (cls, mask HxW bool in BEV coords, conf)
         roi_side: None (normal ROI), 'left' / 'right' (turn sign: center line to that image edge)
         roi_height_scale: with a turn sign, ROI height x this (top row moves up)
+        roi_half: None (whole width), 'left' / 'right' (only that half of the ROI width)
         returns the path as an (N, 2) array of (x forward, y left) [m], or None when no lane is seen
         '''
         cfg = self.cfg
         self.roi_side = roi_side
         self.roi_height_scale = roi_height_scale
+        self.roi_half = roi_half
         # lane curves are sampled over the ROI rows, so a taller sign ROI also samples higher rows
         rows = np.arange(BEV_H - 10, self.roi_top() - 1, -cfg.row_step) if roi_side else cfg.rows
         self.rows = rows
@@ -231,6 +241,7 @@ class LanePath:
         cv2.line(img, (int(cfg.robot_x), BEV_H), (int(cfg.robot_x), BEV_H - 60), (255, 0, 0), 2)
         x0, x1 = self.roi_x_range()
         cv2.rectangle(img, (x0, self.roi_top()), (min(x1, BEV_W - 1), BEV_H - 1), (0, 255, 255), 1)
-        txt = self.mode + (f' [roi {self.roi_side}]' if self.roi_side else '') + (f' v={pursuit.v:.2f} w={pursuit.w:+.2f}' if pursuit is not None else '')
+        txt = self.mode + (f' [roi {self.roi_side}]' if self.roi_side else '') \
+            + (f' [half {self.roi_half}]' if self.roi_half else '') + (f' v={pursuit.v:.2f} w={pursuit.w:+.2f}' if pursuit is not None else '')
         cv2.putText(img, txt, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         return img

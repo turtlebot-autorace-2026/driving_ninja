@@ -11,7 +11,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/models', glob.glob('models/*.pt') + glob.glob('models/*.onnx')),
+        ('share/' + package_name + '/models', glob.glob('models/*.pt') + glob.glob('models/*.onnx') + ['models/README.md']),
         ('share/' + package_name + '/launch', glob.glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],

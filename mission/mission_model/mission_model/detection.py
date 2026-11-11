@@ -1,6 +1,9 @@
 '''
 Mission sign detection with the YOLO11n mission model (imgsz 320).
 
+model_path '.onnx' -> onnxruntime only (no torch/ultralytics: much less RAM on the Jetson),
+'.pt' -> ultralytics. '' picks models/yolo11n_mission.onnx, else the only .pt in models/.
+
   /camera2 (CompressedImage)        front camera
   /parking, /left, ... (Bool)       one topic per sign, published when its state changes
   /mission_model/debug/compressed   boxes on the front image (publish_debug)
@@ -29,7 +32,6 @@ from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import Bool
 from sensor_msgs.msg import CompressedImage
 from ament_index_python.packages import get_package_share_directory
-from ultralytics import YOLO
 
 CLASSES = ['parking', 'left_turn', 'right_turn', 'no_entry', 'stop', 'construction', 'intersection', 'tunnel']
 TOPICS = ['/parking', '/left', '/right', '/no_entry', '/stop', '/construction', '/intersection', '/tunnel']
@@ -38,13 +40,13 @@ TOPICS = ['/parking', '/left', '/right', '/no_entry', '/stop', '/construction', 
 class MissionDetection(Node):
     def __init__(self):
         super().__init__('mission_detection_node')
-        self.declare_parameter('model_path', '')        # '' = the only .pt in the package's models/
+        self.declare_parameter('model_path', '')        # '' = the .onnx (else the only .pt) in models/
         self.declare_parameter('image_topic', '/camera2')
         self.declare_parameter('topics', TOPICS)
         self.declare_parameter('conf', 0.7)
         self.declare_parameter('imgsz', 320)
-        self.declare_parameter('device', '')          # '' = auto (cuda if available), 'cpu', '0'
-        self.declare_parameter('min_box_size', 0.15)    # longer box side / image height: ignore far signs
+        self.declare_parameter('device', '')          # '' auto, 'cpu', '0'; .onnx also 'trt', 'cuda'
+        self.declare_parameter('min_box_size', 0.20)    # longer box side / image height: ignore far signs
         self.declare_parameter('confirm_frames', 3)     # frames in a row with the sign before true
         self.declare_parameter('release_frames', 5)     # frames in a row without the sign before false
         self.declare_parameter('process_hz', 10.0)
@@ -60,17 +62,27 @@ class MissionDetection(Node):
 
         model_path = self.get_parameter('model_path').value
         if not model_path:
-            found = sorted(glob.glob(os.path.join(get_package_share_directory('mission_model'), 'models', '*.pt')))
+            models = os.path.join(get_package_share_directory('mission_model'), 'models')
+            found = sorted(glob.glob(os.path.join(models, '*.onnx'))) or sorted(glob.glob(os.path.join(models, '*.pt')))
             if len(found) != 1:
-                raise ValueError(f'set model_path: expected one .pt in models/, found {found}')
+                raise ValueError(f'set model_path: expected one .onnx or .pt in models/, found {found}')
             model_path = found[0]
-        self.model = YOLO(model_path, task='detect')
+        self.onnx = model_path.endswith('.onnx')
+        if self.onnx:
+            from mission_model.yolo_onnx import YoloOnnx
+            self.model = YoloOnnx(model_path, self.get_parameter('device').value)
+            if self.model.imgsz != self.imgsz:
+                self.get_logger().warning(f'imgsz {self.imgsz} ignored: ONNX input is fixed at {self.model.imgsz}')
+        else:
+            from ultralytics import YOLO
+            self.model = YOLO(model_path, task='detect')
         if len(self.model.names) != len(CLASSES):
             raise ValueError(f'{model_path} has {len(self.model.names)} classes, expected {len(CLASSES)}: {CLASSES}')
         topics = list(self.get_parameter('topics').value)
         if len(topics) != len(CLASSES):
             raise ValueError(f'topics has {len(topics)} names, expected {len(CLASSES)}')
-        self.get_logger().info(f'Mission model loaded: {model_path} '
+        backend = f'onnxruntime {self.model.providers}' if self.onnx else 'ultralytics'
+        self.get_logger().info(f'Mission model loaded ({backend}): {model_path} '
                                + ', '.join(f'{c}->{t}' for c, t in zip(CLASSES, topics)))
 
         self.videoSubscriber = self.create_subscription(
@@ -96,6 +108,9 @@ class MissionDetection(Node):
 
     def detect(self, src):
         '''YOLO inference -> list of (class id, conf, x1, y1, x2, y2)'''
+        if self.onnx:
+            r = self.model.predict(src, conf=self.conf)
+            return [(int(c), float(p), *map(float, b)) for c, p, b in zip(r['classes'], r['scores'], r['boxes'])]
         result = self.model.predict(src, imgsz=self.imgsz, conf=self.conf, device=self.device, verbose=False)[0]
         if result.boxes is None or len(result.boxes) == 0:
             return []

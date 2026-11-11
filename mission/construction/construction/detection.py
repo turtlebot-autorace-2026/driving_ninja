@@ -10,9 +10,13 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 
-# 상태: 대기 -> 차선 추종 <-> (회전 -> 저속 직진 -> 복귀 회전) -> 종료
+# 상태: 대기 -> 차선 추종 <-> (정지 대기 -> 회전 -> 저속 직진 -> 복귀 회전) -> 종료
+# 정지 대기: 전방 물체를 보면 0 속도를 보내고 /odom 속도가 거의 0이 된 뒤에 회전을 시작한다.
+# (명령을 0으로 바꿔도 바퀴 가속 제한 때문에 바로 서지 않아, 바로 회전하면 미끄러지며 물체에 닿는다.)
+# 복귀 회전 뒤 차선 추종은 /construction/lane_roi로 ROI 폭의 절반만 본다(오른쪽 복귀 → 왼쪽 절반,
+# 왼쪽 복귀 → 오른쪽 절반). 전방 물체를 감지하거나 종료하면 원래 ROI로 되돌린다.
 # 저속 직진은 /odom 기준 고정 거리만큼 이동한 뒤 복귀 회전한다.
-WAIT, FOLLOW, TURN_OUT, CREEP, TURN_BACK, DONE, HALT = range(7)
+WAIT, FOLLOW, BRAKE, TURN_OUT, CREEP, TURN_BACK, DONE, HALT = range(8)
 LEFT, RIGHT = 1.0, -1.0
 CREEP_DISTANCE = 0.25  # 회피 회전 후 고정 직진 거리 [m]
 
@@ -25,10 +29,9 @@ class ConstructionDetection(Node):
     def __init__(self):
         super().__init__('construct_detect_node')
         self.declare_parameter('lane_offset', 0.143)        # 따라갈 차선과의 거리 [m]
-        self.declare_parameter('obstacle_distance', 0.2)    # 전방 물체 판단 거리 [m]
+        self.declare_parameter('obstacle_distance', 0.30)    # 전방 물체 판단 거리 [m]
         self.declare_parameter('min_obstacle_points', 10)   # 물체로 볼 최소 점 개수 (전방 60개 중)
-        self.declare_parameter('finish_timeout', 10.0)    # 물체 미감지 종료 시간 [s]
-        self.declare_parameter('both_confirm_frames', 3)    # 양쪽 차선 종료 판단 연속 프레임
+        self.declare_parameter('finish_timeout', 7.0)       # 마지막 회피 후 이 시간 동안 물체가 없으면 종료 [s]
         self.declare_parameter('last_lane_hold', 3.0)       # 물체 앞에서 차선이 없을 때 직전 차선을 쓸 시간 [s]
         self.declare_parameter('lane_info_timeout', 0.5)    # 이보다 오래된 /lane_info는 미검출 [s]
         self.declare_parameter('follow_speed', 0.1)         # 차선 추종 선속도 [m/s]
@@ -43,6 +46,9 @@ class ConstructionDetection(Node):
         self.declare_parameter('turn_speed', 0.8)           # 제자리 회전 최대 각속도 [rad/s]
         self.declare_parameter('turn_min_speed', 0.2)       # 제자리 회전 최소 각속도 [rad/s]
         self.declare_parameter('turn_tolerance', 0.02)      # 회전 완료 허용 오차 [rad]
+        self.declare_parameter('stop_linear_tolerance', 0.005)   # 회피 전 정지로 볼 /odom 선속도 [m/s]
+        self.declare_parameter('stop_angular_tolerance', 0.05)   # 회피 전 정지로 볼 /odom 각속도 [rad/s]
+        self.declare_parameter('stop_timeout', 5.0)         # 이 시간 안에 서지 않으면 그대로 회전 시작 [s]
 
         # mission_model은 표지판 토픽을 latched(transient local)로 발행하므로 같은 QoS로 받는다.
         sign_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -85,6 +91,12 @@ class ConstructionDetection(Node):
             '/lane_state',
             10
         )
+        # driving 노드의 차선 ROI 폭 제한: 'left' | 'right' | ''(전체). 늦게 뜬 노드도 받도록 latched.
+        self.laneRoiPublisher = self.create_publisher(
+            String,
+            '/construction/lane_roi',
+            sign_qos
+        )
 
         self.state = WAIT
         self.front_distance = None
@@ -92,9 +104,11 @@ class ConstructionDetection(Node):
         self.white = None
         self.lane_time = None
         self.last_lane = None           # 마지막으로 차선을 본 (yellow, white, 시각)
-        self.both_frames = 0
         self.yaw = None
         self.position = None
+        self.linear_speed = None        # /odom 선속도 [m/s]
+        self.angular_speed = None       # /odom 각속도 [rad/s]
+        self.brake_start = None         # 회피 전 정지를 시작한 시각 [s]
         self.creep_start = None
         self.creep_target = None        # 목표 차선 앞에서 멈출 누적 직진 거리 [m]
         self.turn_target = None
@@ -104,6 +118,8 @@ class ConstructionDetection(Node):
         self.last_obstacle_time = None
         self.lane_error = None          # 현재 따라가는 차선의 offset 오차 [m]
         self.lane_heading = None        # 현재 따라가는 차선의 로봇 기준 방향 [rad]
+        self.lane_roi = None
+        self.publishLaneRoi('')
         self.timer = self.create_timer(0.05, self.moving)
 
     def now(self):
@@ -116,6 +132,14 @@ class ConstructionDetection(Node):
         msg = Bool()
         msg.data = data
         self.laneStatePublisher.publish(msg)
+
+    def publishLaneRoi(self, half):
+        '''half: 'left' / 'right' = 현재 ROI 폭의 그 절반만, '' = 원래 ROI.'''
+        if half == self.lane_roi:
+            return
+        self.lane_roi = half
+        self.laneRoiPublisher.publish(String(data=half))
+        self.get_logger().info(f'lane ROI: {half or "full"}')
 
     def publishVelocity(self, linear=0.0, angular=0.0):
         twist = Twist()
@@ -152,7 +176,6 @@ class ConstructionDetection(Node):
             & (front_ranges <= msg.range_max)
         ]
 
-        print(len(valid_ranges))
 
 
         # 거리 안에 들어온 점이 충분할 때만 물체로 본다. 점 개수가 물체의 폭에 해당한다.
@@ -169,13 +192,14 @@ class ConstructionDetection(Node):
         self.lane_time = self.now()
         if self.yellow is not None or self.white is not None:
             self.last_lane = (self.yellow, self.white, self.lane_time)
-        self.both_frames = self.both_frames + 1 if self.yellow is not None and self.white is not None else 0
         self.updateLaneError()
 
     def odomSubscriber_callback(self, msg):
         self.position = (msg.pose.pose.position.x, msg.pose.pose.position.y)
         q = msg.pose.pose.orientation
         self.yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.linear_speed = msg.twist.twist.linear.x
+        self.angular_speed = msg.twist.twist.angular.z
 
     def visibleLanes(self):
         '''(yellow, white). 오래된 /lane_info는 두 차선 모두 미검출로 본다.'''
@@ -213,18 +237,28 @@ class ConstructionDetection(Node):
             self.turn_direction, self.creep_line = RIGHT, 'white'
         else:
             return False
-        if not self.startTurn(self.turn_direction):
+        if self.yaw is None:
             return False
         self.get_logger().info(
-            f'Avoid {self.avoid_count + 1}: turn {"left" if self.turn_direction == LEFT else "right"}, '
+            f'Avoid {self.avoid_count + 1}: stop, then turn {"left" if self.turn_direction == LEFT else "right"}, '
             f'creep {CREEP_DISTANCE:.2f} m')
-        self.state = TURN_OUT
+        # 바로 회전하지 않고 먼저 멈춘다. 회전 목표 각도는 완전히 선 뒤의 yaw로 정한다.
+        self.publishVelocity()
+        self.brake_start = self.now()
+        self.state = BRAKE
         return True
+
+    def isStopped(self):
+        '''/odom 선속도·각속도가 모두 정지 허용치 이하이면 True.'''
+        if self.linear_speed is None or self.angular_speed is None:
+            return False
+        return abs(self.linear_speed) <= self.param('stop_linear_tolerance') \
+            and abs(self.angular_speed) <= self.param('stop_angular_tolerance')
 
     def startTurn(self, direction):
         if self.yaw is None:
             return False
-        self.turn_target = wrapAngle(self.yaw + direction * math.radians(82.0))
+        self.turn_target = wrapAngle(self.yaw + direction * math.radians(90.0))
         return True
 
     def turnInPlace(self):
@@ -240,6 +274,7 @@ class ConstructionDetection(Node):
     def finish(self, reason):
         self.get_logger().info(f'Construction end ({reason}): lane_state True')
         self.publishVelocity()
+        self.publishLaneRoi('')     # lane_state True 전에 ROI를 원래대로 되돌린다.
         self.publishLaneState(True)
         self.state = DONE
 
@@ -252,18 +287,29 @@ class ConstructionDetection(Node):
         if self.state == FOLLOW:
             if obstacle:
                 self.get_logger().info(f'avg distance : {self.front_distance:.2f}')
+                self.publishLaneRoi('')     # 전방 물체: 원래 ROI로 차선을 다시 본다.
                 if not self.startAvoid(yellow, white):
                     self.publishVelocity(self.param('lost_speed'), 0.0)     # 판단할 차선이 보일 때까지 저속 직진
                 return
-            # 종료 조건은 첫 회피 이후부터 본다. 그 전에는 양쪽 차선이 보여도 흰선을 따라간다.
-            if self.avoid_count > 0:
-                if self.both_frames >= self.param('both_confirm_frames'):
-                    self.finish('both lanes')
-                    return
-                if self.now() - self.last_obstacle_time >= self.param('finish_timeout'):
-                    self.finish('no obstacle')
-                    return
+            # 종료 조건은 첫 회피 이후부터 본다: 마지막 복귀 회전 후 finish_timeout 동안 물체가 없으면 종료.
+            if self.avoid_count > 0 and self.now() - self.last_obstacle_time >= self.param('finish_timeout'):
+                self.finish('no obstacle')
+                return
             self.followLane(yellow, white)
+
+        elif self.state == BRAKE:
+            self.publishVelocity()
+            waited = self.now() - self.brake_start
+            stopped = self.isStopped()
+            if not stopped and waited < self.param('stop_timeout'):
+                return
+            if stopped:
+                self.get_logger().info(f'stopped after {waited:.1f} s: start turn')
+            else:
+                self.get_logger().warning(
+                    f'not stopped within {waited:.1f} s (v={self.linear_speed}, w={self.angular_speed}): start turn')
+            if self.startTurn(self.turn_direction):
+                self.state = TURN_OUT
 
         elif self.state == TURN_OUT:
             if self.turnInPlace():
@@ -302,9 +348,10 @@ class ConstructionDetection(Node):
 
         elif self.state == TURN_BACK:
             if self.turnInPlace():
+                # 복귀 회전이 오른쪽이면(왼쪽으로 피함) 왼쪽 절반, 왼쪽이면 오른쪽 절반만 본다.
+                self.publishLaneRoi('left' if -self.turn_direction == RIGHT else 'right')
                 self.avoid_count += 1
                 self.last_obstacle_time = self.now()
-                self.both_frames = 0
                 self.state = FOLLOW
 
 

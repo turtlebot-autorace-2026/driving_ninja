@@ -10,11 +10,19 @@ from driving.detection.lane_estimator import LaneConfig, LanePath, to_bev
 
 class YoloLane:
     def __init__(self, model_path: str, device: str = ''):
-        # basic만 사용하는 환경에서는 ultralytics를 import하거나 모델을 읽지 않는다.
+        # basic만 사용하는 환경에서는 추론 라이브러리를 import하거나 모델을 읽지 않는다.
+        # .onnx는 onnxruntime만 쓰고(torch 미사용, Jetson 메모리 절약), .pt는 ultralytics를 쓴다.
         if not Path(model_path).is_file():
             raise ValueError('YOLO model not found: ' + model_path)
-        from ultralytics import YOLO
-        self.model = YOLO(model_path, task='segment')
+        self.onnx = model_path.endswith('.onnx')
+        if self.onnx:
+            from driving.detection.yolo_onnx import YoloOnnx
+            self.model = YoloOnnx(model_path, device)
+            if self.model.task != 'segment' or self.model.nc != 2:
+                raise ValueError('lane ONNX must be a 2-class segment model: ' + model_path)
+        else:
+            from ultralytics import YOLO
+            self.model = YOLO(model_path, task='segment')
         self.device = device or None
         self.conf = 0.4
         self.imgsz = 640
@@ -30,7 +38,10 @@ class YoloLane:
 
     def detect(self, bev):
         """원본 detection.py의 YOLO 추론 및 마스크 추출 계산."""
-        result = self.model.predict(bev, imgsz=self.imgsz, conf=self.conf, device=self.device,
+        if self.onnx:  # 입력 크기는 ONNX에 고정되어 imgsz 파라미터를 쓰지 않는다.
+            r = self.model.predict(bev, conf=self.conf, retina_masks=True)
+            return [(int(c), m, float(p)) for c, m, p in zip(r['classes'], r['masks'], r['scores'])]
+        result =self.model.predict(bev, imgsz=self.imgsz, conf=self.conf, device=self.device,
                                     retina_masks=True, verbose=False)[0]
         if result.masks is None:
             return []
@@ -43,11 +54,13 @@ class YoloLane:
         self, msg, conf=0.4, imgsz=640, camera_height=0.129,
         roi_top_row=220, roi_half_width=250, lookahead_row=400,
         single_offset=0.5, lane_width=355.0, roi_side=None, roi_height_scale=1.0,
+        roi_half=None,
     ) -> Tuple[Optional[Tuple[float, float]], str]:
         """target=(전방 x, 좌측 y)[m] 또는 None, mode=both/단일 차선/lost.
 
         roi_side: None=기본 ROI, 'left'/'right'=로봇 중앙선부터 해당 방향 영상 끝까지(회전 표지판).
         roi_height_scale: 회전 표지판 ROI의 높이 배율(위쪽으로 늘림).
+        roi_half: None=ROI 전체 폭, 'left'/'right'=위 ROI 폭의 해당 절반만(공사 구간 회피 후).
         """
         self.bev = None
         self.detections = []
@@ -78,7 +91,7 @@ class YoloLane:
         self.conf, self.imgsz = conf, imgsz
         self.bev = to_bev(src)
         self.detections = self.detect(self.bev)
-        path = self.lane.update(self.detections, roi_side, roi_height_scale)
+        path = self.lane.update(self.detections, roi_side, roi_height_scale, roi_half)
         target = None if path is None else self.lane.target(path)
         return target, self.lane.mode
 
