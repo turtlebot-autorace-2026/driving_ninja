@@ -29,22 +29,22 @@ class ConstructionDetection(Node):
     def __init__(self):
         super().__init__('construct_detect_node')
         self.declare_parameter('lane_offset', 0.143)        # 따라갈 차선과의 거리 [m]
-        self.declare_parameter('obstacle_distance', 0.30)    # 전방 물체 판단 거리 [m]
+        self.declare_parameter('obstacle_distance', 0.205)    # 전방 물체 판단 거리 [m]
         self.declare_parameter('min_obstacle_points', 10)   # 물체로 볼 최소 점 개수 (전방 60개 중)
         self.declare_parameter('finish_timeout', 7.0)       # 마지막 회피 후 이 시간 동안 물체가 없으면 종료 [s]
         self.declare_parameter('last_lane_hold', 3.0)       # 물체 앞에서 차선이 없을 때 직전 차선을 쓸 시간 [s]
         self.declare_parameter('lane_info_timeout', 0.5)    # 이보다 오래된 /lane_info는 미검출 [s]
-        self.declare_parameter('follow_speed', 0.1)         # 차선 추종 선속도 [m/s]
-        self.declare_parameter('lost_speed', 0.05)          # 차선 미검출 직진 선속도 [m/s]
-        self.declare_parameter('creep_speed', 0.05)         # 회피 저속 직진 선속도 [m/s]
+        self.declare_parameter('follow_speed', 0.3)#0.1         # 차선 추종 선속도 [m/s]
+        self.declare_parameter('lost_speed', 0.3) #0.05          # 차선 미검출 직진 선속도 [m/s]
+        self.declare_parameter('creep_speed', 0.2)         # 회피 저속 직진 선속도 [m/s]
         # 기존 차선 기반 직진 종료 설정 (고정 거리 사용 중에는 비활성화)
         # self.declare_parameter('creep_stop_distance', 0.005)  # 목표 차선이 이 거리 안에 오면 직진 종료 [m]
         # self.declare_parameter('creep_max_distance', 0.6)   # 차선 없이 저속 직진할 최대 거리 [m]
         self.declare_parameter('kp', 3.0)                 # 차선 offset P 게인
-        self.declare_parameter('kh', 1.5)                   # 차선 각도 게인
-        self.declare_parameter('max_angular', 1.0)          # 차선 추종 최대 각속도 [rad/s]
+        self.declare_parameter('kh', 7.0) #1.5                   # 차선 각도 게인
+        self.declare_parameter('max_angular', 2.0)          # 차선 추종 최대 각속도 [rad/s]
         self.declare_parameter('turn_speed', 0.8)           # 제자리 회전 최대 각속도 [rad/s]
-        self.declare_parameter('turn_min_speed', 0.2)       # 제자리 회전 최소 각속도 [rad/s]
+        self.declare_parameter('turn_min_speed', 0.5)       # 제자리 회전 최소 각속도 [rad/s]
         self.declare_parameter('turn_tolerance', 0.02)      # 회전 완료 허용 오차 [rad]
         self.declare_parameter('stop_linear_tolerance', 0.005)   # 회피 전 정지로 볼 /odom 선속도 [m/s]
         self.declare_parameter('stop_angular_tolerance', 0.05)   # 회피 전 정지로 볼 /odom 각속도 [rad/s]
