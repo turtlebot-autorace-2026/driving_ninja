@@ -5,6 +5,7 @@ model_path '.onnx' -> onnxruntime only (no torch/ultralytics: much less RAM on t
 '.pt' -> ultralytics. '' picks models/yolo11n_mission.onnx, else the only .pt in models/.
 
   /camera2 (CompressedImage)        front camera
+  /parking/lane_mode (String)      pause signs during parking approach/maneuver
   /parking, /left, ... (Bool)       one topic per sign, published when its state changes
   /mission_model/debug/compressed   boxes on the front image (publish_debug)
 
@@ -29,7 +30,7 @@ import rclpy
 import numpy as np
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from sensor_msgs.msg import CompressedImage
 from ament_index_python.packages import get_package_share_directory
 
@@ -101,7 +102,25 @@ class MissionDetection(Node):
             pub.publish(Bool(data=False))
         # process only the latest frame (inference may be slower than the camera)
         self.latest_msg = None
+        self.signs_paused = False
+        self.create_subscription(String, '/parking/lane_mode', self.parking_mode_callback, latched)
         self.timer = self.create_timer(1.0 / self.get_parameter('process_hz').value, self.process)
+
+    def parking_mode_callback(self, msg):
+        if msg.data not in ('', 'left', 'maneuver', 'exit', 'intersection', 'halt'):
+            return
+        paused = msg.data in ('left', 'maneuver', 'halt')
+        if paused == self.signs_paused:
+            return
+        self.signs_paused = paused
+        # 출차 때 진입 전 영상·검출 횟수·latched True를 재사용하지 않는다.
+        self.latest_msg = None
+        for c, pub in enumerate(self.signPublishers):
+            self.seen_count[c] = self.missed_count[c] = 0
+            if self.active[c]:
+                self.active[c] = False
+                pub.publish(Bool(data=False))
+        self.get_logger().info('Sign detection ' + ('paused for parking' if paused else 'resumed'))
 
     def videoSubscriber_callback(self, msg):
         self.latest_msg = msg
@@ -151,8 +170,10 @@ class MissionDetection(Node):
             self.get_logger().error(f'Error decoding compressed image: {e}')
             return
 
-        detections = self.detect(src)
-        self.update(self.seen_classes(detections, src.shape[0]))
+        detections = []
+        if not self.signs_paused:
+            detections = self.detect(src)
+            self.update(self.seen_classes(detections, src.shape[0]))
 
         if self.debugPublisher is not None or self.show:
             img = self.draw(src, detections)
@@ -175,7 +196,8 @@ class MissionDetection(Node):
             cv2.putText(img, f'{CLASSES[c]} {p:.2f}', (int(x1), max(int(y1) - 5, 12)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         active = [pub.topic_name for pub, a in zip(self.signPublishers, self.active) if a]
-        cv2.putText(img, 'active: ' + (' '.join(active) or '-'), (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        label = 'signs paused: parking' if self.signs_paused else 'active: ' + (' '.join(active) or '-')
+        cv2.putText(img, label, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return img
 
 

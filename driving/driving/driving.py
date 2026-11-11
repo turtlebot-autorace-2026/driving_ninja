@@ -45,6 +45,7 @@ class DrivingNode(Node):
         # 공사 구간(/construction/lane_roi): 회피 복귀 후 ROI 폭의 왼쪽/오른쪽 절반만 본다.
         # lane_state와 관계없이 적용한다(공사 구간은 lane_state=False로 /lane_info만 쓴다).
         self.roi_half: Optional[str] = None   # None | 'left' | 'right'
+        self.parking_mode = ''  # '' | left | maneuver | exit | intersection | halt
 
         # 계산 객체를 재사용한다. 무거운 YOLO 모델은 첫 처리 때 한 번 읽는다.
 
@@ -117,6 +118,8 @@ class DrivingNode(Node):
         # construction 노드도 latched로 발행한다. 값: 'left' | 'right' | ''(전체 ROI)
         self.lane_roi_subscription = self.create_subscription(
             String, '/construction/lane_roi', self.lane_roi_callback, sign_qos)
+        self.parking_mode_subscription = self.create_subscription(
+            String, '/parking/lane_mode', self.parking_mode_callback, sign_qos)
         ## 파라미터
         self.declare_parameter('basic_sat.beta', -5080.1)   # for basic_sat
         self.declare_parameter('basic.lane_mode', True)   # for basic_sat, basic_sobel & basic_p
@@ -147,6 +150,11 @@ class DrivingNode(Node):
         self.declare_parameter('pure_pursuit.k_v', 0.6)
         self.declare_parameter('pure_pursuit.ang_smooth', 0.6)
         self.declare_parameter('pure_pursuit.v_single', 0.8)
+
+        # 주차 진입(left 모드)에서만 가까운 왼쪽 ROI + 미검출 시 왼쪽 탐색.
+        self.declare_parameter('parking.approach_roi_top_row', 250)  # BEV y[250,480)
+        self.declare_parameter('parking.search_speed', 0.05)        # 전진 m/s
+        self.declare_parameter('parking.search_angular', 0.8)       # 왼쪽 rad/s(약46°/s), 고정 회전각 아님
 
         # 회전 표지판을 본 뒤 방향 ROI를 유지하는 시간 [s]
         self.declare_parameter('sign.roi_hold_sec', 30.0)
@@ -183,11 +191,11 @@ class DrivingNode(Node):
             except (ValueError, cv2.error) as error:
                 # 손상되거나 규격이 맞지 않는 영상은 차선 미검출과 구분한다.
                 self.get_logger().warning(f'Camera processing failed: {error}')
-                if self.lane_enabled:
+                if self.lane_driving_enabled():
                     self.cmd_vel_pub.publish(Twist())
                 return
 
-            if self.lane_enabled:
+            if self.lane_driving_enabled():
                 self.cmd_vel_pub.publish(twist)
             self.publish_debug_basic_sat()
 
@@ -198,10 +206,10 @@ class DrivingNode(Node):
                 twist = self.basic_p.makeTwist(center, lane_mode)
             except (ValueError, cv2.error) as error:
                 self.get_logger().warning(f'Camera processing failed: {error}')
-                if self.lane_enabled:
+                if self.lane_driving_enabled():
                     self.cmd_vel_pub.publish(Twist())
                 return
-            if self.lane_enabled:
+            if self.lane_driving_enabled():
                 self.cmd_vel_pub.publish(twist)
             self.publish_debug_basic_sobel()
 
@@ -225,23 +233,26 @@ class DrivingNode(Node):
                 self.yolo_lane = YoloLane(p('yolo_lane.model_path'), p('yolo_lane.device'))
                 backend = getattr(self.yolo_lane.model, 'providers', 'ultralytics')
                 self.get_logger().info(f'YOLO lane model loaded ({backend}): ' + p('yolo_lane.model_path'))
+            roi_side, roi_half = self.lane_roi_settings()
             target, mode = self.yolo_lane.detectLane(
                 msg, conf=p('yolo_lane.conf'), imgsz=p('yolo_lane.imgsz'),
                 camera_height=p('yolo_lane.camera_height'),
-                roi_top_row=p('yolo_lane.roi_top_row'),
+                roi_top_row=p('parking.approach_roi_top_row') if self.parking_mode == 'left'
+                            else p('yolo_lane.roi_top_row'),
                 roi_half_width=p('yolo_lane.roi_half_width'),
                 lookahead_row=p('yolo_lane.lookahead_row'),
                 single_offset=p('yolo_lane.single_offset'),
                 lane_width=p('yolo_lane.lane_width'),
-                # 주행 대기 중에는 외부 미션이 /lane_info를 쓰므로 표지판 ROI로 시야를 자르지 않는다.
-                roi_side=self.roi_side if self.lane_enabled else None,
+                roi_side=roi_side,
                 roi_height_scale=p('sign.roi_height_scale'),
-                roi_half=self.roi_half,
+                roi_half=roi_half,
             )
             yellow, white = self.yolo_lane.lane.lane_offsets()
             yellow_heading, white_heading = self.yolo_lane.lane.lane_headings()
             self.lane_info_pub.publish(String(data=json.dumps({
                 'stamp': {'sec': msg.header.stamp.sec, 'nanosec': msg.header.stamp.nanosec},
+                'mode': mode,
+                'parking_mode': self.parking_mode,
                 'yellow': yellow,
                 'white': white,
                 'yellow_heading': yellow_heading,
@@ -255,19 +266,38 @@ class DrivingNode(Node):
                 intersection=self.is_intersection,
                 v_max_intersection=p('pure_pursuit.v_max_intersection'),
             )
-            if self.lane_enabled:
+            if self.parking_mode == 'left' and target is None:
+                # 정상 영상의 차선 미검출에만 적용. 재검출된 프레임부터 기존 추종.
+                speed, angular = p('parking.search_speed'), p('parking.search_angular')
+                if not math.isfinite(speed) or not math.isfinite(angular) or min(speed, angular) < 0:
+                    raise ValueError('Parking search speed/angular must be finite and non-negative.')
+                twist.linear.x, twist.angular.z = float(speed), float(angular)
+            if self.lane_driving_enabled():
                 self.limit_yolo_startup(twist)
                 self.cmd_vel_pub.publish(twist)
+            # 미검출 탐색과 출발 가속 제한을 포함한 명령을 debug1에도 표시한다.
+            self.pure_pursuit.pursuit.v, self.pure_pursuit.pursuit.w = twist.linear.x, twist.angular.z
             self.publish_debug_yolo(msg)
         except Exception as error:
             # 모델 로딩/추론 실패도 노드를 종료시키지 않는다. 주행 중이면 정지한다.
             # 정상 미검출(None → v_lost 직진)과는 별개의 경로다.
             self.get_logger().error(f'YOLO processing failed: {error}')
-            if self.lane_enabled:
+            if self.lane_driving_enabled():
                 self.cmd_vel_pub.publish(Twist())
             self.reset_yolo()
         finally:
             self.last_yolo_processing_seconds = time.perf_counter() - started
+
+    def lane_driving_enabled(self):
+        return self.lane_enabled and self.parking_mode not in ('maneuver', 'halt')
+
+    def lane_roi_settings(self):
+        if self.parking_mode in ('left', 'maneuver', 'exit'):
+            # 공사와 같은 기본 ROI 왼쪽 절반. 방향 표지판의 높이 확장은 쓰지 않는다.
+            return None, 'left'
+        if self.parking_mode == 'halt':
+            return None, None
+        return self.roi_side if self.lane_enabled else None, self.roi_half
 
     def lane_state_callback(self, msg: Bool):
         was_enabled = self.lane_enabled
@@ -297,12 +327,32 @@ class DrivingNode(Node):
         self.get_logger().info(state + ' Intersection Mode')
 
     def left_sign_callback(self, msg: Bool):
-        if msg.data:
+        if msg.data and self.parking_mode in ('', 'intersection'):
             self.start_sign_roi('left')
 
     def right_sign_callback(self, msg: Bool):
-        if msg.data:
+        if msg.data and self.parking_mode in ('', 'intersection'):
             self.start_sign_roi('right')
+
+    def parking_mode_callback(self, msg: String):
+        mode = msg.data.strip().lower()
+        if mode not in ('', 'left', 'maneuver', 'exit', 'intersection', 'halt'):
+            self.get_logger().warning('Ignoring invalid parking lane mode: ' + mode)
+            return
+        if mode == self.parking_mode:
+            return
+        self.parking_mode = mode
+        # Do not carry an old turn sign/construction ROI or tracker across handoff.
+        self.roi_side = None
+        self.roi_half = None
+        self.reset_yolo()
+        if mode in ('maneuver', 'halt'):
+            self.cmd_vel_pub.publish(Twist())
+        elif mode == 'intersection':
+            # 출구의 같은 /left 이벤트가 주차 모드에서 먼저 무시됐어도 놓치지 않는다.
+            self.intersection_state_callback(Bool(data=True))
+            self.start_sign_roi('left')
+        self.get_logger().info('Parking lane mode: ' + (mode or 'normal'))
 
     def lane_roi_callback(self, msg: String):
         half = msg.data.strip().lower() or None
