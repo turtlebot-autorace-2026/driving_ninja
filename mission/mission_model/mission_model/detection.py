@@ -7,7 +7,7 @@ model_path '.onnx' -> onnxruntime only (no torch/ultralytics: much less RAM on t
   /camera2 (CompressedImage)        front camera
   /parking/lane_mode (String)      pause signs during parking approach/maneuver
   /parking, /left, ... (Bool)       one topic per sign, published when its state changes
-  /mission_model/debug/compressed   boxes on the front image (publish_debug)
+  /debug2 (CompressedImage)        boxes on the front image (publish_debug)
 
 Model classes (8 signs, see label_image.jpg) -> topics (parameter `topics`, same order
 as the class ids):
@@ -51,7 +51,7 @@ class MissionDetection(Node):
         self.declare_parameter('confirm_frames', 3)     # frames in a row with the sign before true
         self.declare_parameter('release_frames', 5)     # frames in a row without the sign before false
         self.declare_parameter('process_hz', 10.0)
-        self.declare_parameter('publish_debug', True)   # boxes on /mission_model/debug/compressed
+        self.declare_parameter('publish_debug', True)   # boxes on /debug2
         self.declare_parameter('show', False)           # cv2 debug window
         self.conf = self.get_parameter('conf').value
         self.imgsz = self.get_parameter('imgsz').value
@@ -92,7 +92,7 @@ class MissionDetection(Node):
         self.signPublishers = [self.create_publisher(Bool, t, latched) for t in topics]
         self.debugPublisher = None
         if self.get_parameter('publish_debug').value:
-            self.debugPublisher = self.create_publisher(CompressedImage, '/mission_model/debug/compressed', 10)
+            self.debugPublisher = self.create_publisher(CompressedImage, '/debug2', 10)
 
         n = len(CLASSES)
         self.active = [False] * n
