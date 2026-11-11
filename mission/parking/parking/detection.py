@@ -20,14 +20,16 @@ class ParkingDetection(Node):
         super().__init__('parking_detect_node')
         # 기본 순서: 0 후진, 1 회전1, 2 전진, 3 후진, 4 회전2, 5 전진.
         # 직선 단계의 전진/후진은 linear_speeds의 부호로 바꿀 수 있다.
-        # 거리/각도는 양수 크기, 이동 방향은 linear_speeds와 direction으로 지정한다.
+        # 거리/각도는 양수 크기, 이동 방향은 선택한 쪽의 linear_speeds와 direction으로 지정한다.
         # 사용자는 config/parking_sim.yaml의 숫자를 수정하고 노드를 재시작한다.
-        defaults = {
-            'direction': 'left', 'white_ratio': 0.04,
+        motion_defaults = {
             'distances': [0.20, 0.0, 0.32, 0.32, 0.0, 0.20],  # m
             'angles_deg': [0.0, 89.4, 0.0, 0.0, 77.3, 0.0],
             'linear_speeds': [-0.2, 0.0, 0.2, -0.2, 0.0, 0.2],
             'angular_speeds': [0.0, 1.2, 0.0, 0.0, 1.5, 0.0],
+        }
+        defaults = {
+            'direction': 'left', 'white_ratio': 0.04,
             'distance_tolerance': 0.01, 'angle_tolerance_deg': 1.0,
             'distance_kp': 1.0, 'angle_kp': 1.5, 'heading_kp': 2.0,
             'min_linear_speed': 0.03, 'min_angular_speed': 0.10,
@@ -39,15 +41,17 @@ class ParkingDetection(Node):
         }
         for name, value in defaults.items():
             self.declare_parameter(name, value, ParameterDescriptor(read_only=True))
+        for side in ('left', 'right'):
+            for name, value in motion_defaults.items():
+                self.declare_parameter(side + '.' + name, list(value),
+                                       ParameterDescriptor(read_only=True))
         if self.param('direction') not in ('left', 'right'):
             raise ValueError('direction must be left or right')
         if not 0 < self.param('white_ratio') <= 1:
             raise ValueError('white_ratio must be in (0, 1]')
-        for name in ('distances', 'angles_deg', 'linear_speeds', 'angular_speeds',
-                     'step_timeouts'):
-            values = self.param(name)
-            if len(values) != 6 or not all(math.isfinite(v) for v in values):
-                raise ValueError(name + ' must contain six finite values')
+        values = self.param('step_timeouts')
+        if len(values) != 6 or not all(math.isfinite(v) for v in values):
+            raise ValueError('step_timeouts must contain six finite values')
         for name in ('distance_tolerance', 'angle_tolerance_deg', 'distance_kp',
                      'angle_kp', 'min_linear_speed', 'min_angular_speed',
                      'max_heading_angular', 'stop_linear_tolerance',
@@ -58,16 +62,23 @@ class ParkingDetection(Node):
             raise ValueError('heading_kp must be finite and non-negative')
         if min(self.param('step_timeouts')) <= 0:
             raise ValueError('step_timeouts must be positive')
-        for i in range(6):
-            distance, angle = self.param('distances')[i], self.param('angles_deg')[i]
-            v, w = self.param('linear_speeds')[i], self.param('angular_speeds')[i]
-            if i in (0, 2, 3, 5):
-                if (distance <= self.param('distance_tolerance') or angle != 0 or w != 0
-                        or abs(v) < self.param('min_linear_speed')):
-                    raise ValueError('Invalid straight movement settings at step ' + str(i))
-            elif (distance != 0 or angle <= self.param('angle_tolerance_deg') or v != 0
-                  or w < self.param('min_angular_speed')):
-                raise ValueError('Invalid turn settings at step ' + str(i))
+        for side in ('left', 'right'):
+            for name in motion_defaults:
+                values = self.motion_param(name, side)
+                if len(values) != 6 or not all(math.isfinite(v) for v in values):
+                    raise ValueError(side + '.' + name + ' must contain six finite values')
+            for i in range(6):
+                distance = self.motion_param('distances', side)[i]
+                angle = self.motion_param('angles_deg', side)[i]
+                v = self.motion_param('linear_speeds', side)[i]
+                w = self.motion_param('angular_speeds', side)[i]
+                if i in (0, 2, 3, 5):
+                    if (distance <= self.param('distance_tolerance') or angle != 0 or w != 0
+                            or abs(v) < self.param('min_linear_speed')):
+                        raise ValueError('Invalid ' + side + ' straight movement at step ' + str(i))
+                elif (distance != 0 or angle <= self.param('angle_tolerance_deg') or v != 0
+                      or w < self.param('min_angular_speed')):
+                    raise ValueError('Invalid ' + side + ' turn at step ' + str(i))
 
         self.phase = 'IDLE'  # IDLE -> APPROACH -> PARKING -> EXIT -> DONE; cancel -> HALT
         self.parking_requested = False
@@ -104,6 +115,11 @@ class ParkingDetection(Node):
     def param(self, name):
         return self.get_parameter(name).value
 
+    def motion_param(self, name, side=None):
+        """direction으로 선택한 주차 쪽의 6단계 배열을 읽는다."""
+        side = self.param('direction') if side is None else side
+        return self.param(side + '.' + name)
+
     def now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
@@ -127,8 +143,10 @@ class ParkingDetection(Node):
     def publish_status(self, reason):
         self.status_pub.publish(String(data=json.dumps({
             'phase': self.phase, 'step': self.step, 'reason': reason,
+            'direction': self.param('direction'),
         })))
-        self.get_logger().info(f'Parking phase={self.phase}, step={self.step}: {reason}')
+        self.get_logger().info(
+            f'Parking phase={self.phase}, step={self.step}, direction={self.param("direction")}: {reason}')
 
     def odom_callback(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
@@ -245,7 +263,7 @@ class ParkingDetection(Node):
             return
 
         if self.settling:
-            # 첫 후진 전과 모든 동작 사이에 실제 정지를 확인한다.
+            # 첫 동작 전과 모든 동작 사이에 실제 정지를 확인한다.
             self.velocity_pub.publish(Twist())
             if now - self.stop_started >= self.param('stop_timeout'):
                 self.halt('stop confirmation timed out')
@@ -268,11 +286,11 @@ class ParkingDetection(Node):
         x0, y0, yaw0 = self.step_origin
         twist = Twist()
         if self.step in (0, 2, 3, 5):
-            speed = self.param('linear_speeds')[self.step]
+            speed = self.motion_param('linear_speeds')[self.step]
             sign = math.copysign(1.0, speed)
             dx, dy = self.position[0] - x0, self.position[1] - y0
             progress = sign * (dx * math.cos(yaw0) + dy * math.sin(yaw0))
-            remaining = self.param('distances')[self.step] - progress
+            remaining = self.motion_param('distances')[self.step] - progress
             reached = remaining <= self.param('distance_tolerance')
             twist.linear.x = sign * min(abs(speed), max(self.param('min_linear_speed'),
                                                        self.param('distance_kp') * remaining))
@@ -283,9 +301,9 @@ class ParkingDetection(Node):
         else:
             sign = 1.0 if self.param('direction') == 'left' else -1.0
             progress = sign * (self.unwrapped_yaw - yaw0)
-            remaining = math.radians(self.param('angles_deg')[self.step]) - progress
+            remaining = math.radians(self.motion_param('angles_deg')[self.step]) - progress
             reached = remaining <= math.radians(self.param('angle_tolerance_deg'))
-            twist.angular.z = sign * min(self.param('angular_speeds')[self.step],
+            twist.angular.z = sign * min(self.motion_param('angular_speeds')[self.step],
                                          max(self.param('min_angular_speed'),
                                              self.param('angle_kp') * remaining))
         if reached:

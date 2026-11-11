@@ -100,11 +100,11 @@ def complete_step(n):
     step = n.step
     x0, y0, yaw0 = n.step_origin
     if step in (0, 2, 3, 5):
-        distance = math.copysign(n.param('distances')[step], n.param('linear_speeds')[step])
+        distance = math.copysign(n.motion_param('distances')[step], n.motion_param('linear_speeds')[step])
         odom(n, x0 + distance*math.cos(yaw0), y0 + distance*math.sin(yaw0), v=.1)
     else:
         sign = 1 if n.param('direction') == 'left' else -1
-        angle = sign * math.radians(n.param('angles_deg')[step])
+        angle = sign * math.radians(n.motion_param('angles_deg')[step])
         for delta in np.linspace(0, angle, max(2, int(abs(angle)/.5)+1))[1:]:
             odom(n, yaw=yaw0+delta, w=sign*.2)
     n.tick()
@@ -152,12 +152,12 @@ def test_six_odom_movements_then_exit_and_left_sign(node_factory, direction):
         cmd = n.velocity_pub.messages[-1]
         assert n.step == i
         if i in (0, 2, 3, 5):
-            assert cmd.linear.x == pytest.approx(n.param('linear_speeds')[i])
+            assert cmd.linear.x == pytest.approx(n.motion_param('linear_speeds')[i])
             assert cmd.angular.z == pytest.approx(0)
         else:
             sign = 1 if direction == 'left' else -1
             assert cmd.linear.x == 0 and sign*cmd.angular.z > 0
-            assert abs(cmd.angular.z) <= n.param('angular_speeds')[i]
+            assert abs(cmd.angular.z) <= n.motion_param('angular_speeds')[i]
         complete_step(n)
     assert n.phase == 'EXIT' and n.mode_pub.messages[-1].data == 'exit'
     count = len(n.velocity_pub.messages)
@@ -236,8 +236,8 @@ def test_straight_deceleration_and_heading_correction(node, step):
     for _ in range(step):
         complete_step(node)
     x0, y0, yaw0 = node.step_origin
-    sign = math.copysign(1, node.param('linear_speeds')[step])
-    distance = sign * (node.param('distances')[step] - .02)
+    sign = math.copysign(1, node.motion_param('linear_speeds')[step])
+    distance = sign * (node.motion_param('distances')[step] - .02)
     odom(node, x0+distance*math.cos(yaw0), y0+distance*math.sin(yaw0), yaw0+.1)
     node.tick()
     cmd = node.velocity_pub.messages[-1]
@@ -253,12 +253,12 @@ def test_turn_crosses_pi_decelerates_and_requires_stop(node_factory, direction, 
     complete_step(n)
     sign = 1 if direction == 'left' else -1
     yaw0 = n.step_origin[2]
-    for delta in [30., 60., n.param('angles_deg')[1]-3.]:
+    for delta in [30., 60., n.motion_param('angles_deg')[1]-3.]:
         odom(n, yaw=yaw0+sign*math.radians(delta), w=sign*.2)
         n.tick()
     assert not n.settling and n.step == 1
     assert n.velocity_pub.messages[-1].angular.z == pytest.approx(sign*n.param('min_angular_speed'))
-    odom(n, yaw=yaw0+sign*math.radians(n.param('angles_deg')[1]+2.), w=sign*.2)
+    odom(n, yaw=yaw0+sign*math.radians(n.motion_param('angles_deg')[1]+2.), w=sign*.2)
     n.tick()
     assert n.settling and n.step == 1
     odom(n, w=sign*.1)
@@ -356,8 +356,8 @@ def test_yaml_values_and_tuned_distance_angle_speed_are_applied(node_factory):
     assert set(values) == set(n.parameters) and 'durations' not in values
     for name, value in values.items():
         assert value == n.param(name)
-    values['distances'][0], values['angles_deg'][1] = .40, 100.
-    values['linear_speeds'][0] = -.1
+    values['left.distances'][0], values['left.angles_deg'][1] = .40, 100.
+    values['left.linear_speeds'][0] = -.1
     values['direction'] = 'left'
     n = node_factory(values)
     approach(n)
@@ -389,9 +389,15 @@ def test_yaml_values_and_tuned_distance_angle_speed_are_applied(node_factory):
     {'angle_kp': float('inf')}, {'direction': 'invalid'},
     {'distance_tolerance': .5}, {'heading_kp': -1.},
 ])
-def test_invalid_tuning_rejected_at_startup(node_factory, overrides):
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_invalid_tuning_rejected_at_startup(node_factory, overrides, side):
+    motion_keys = {'distances', 'angles_deg', 'linear_speeds', 'angular_speeds'}
+    settings = {(side + '.' + key if key in motion_keys else key): value
+                for key, value in overrides.items()}
+    # Both sides are validated, including the inactive side.
+    settings.setdefault('direction', 'right' if side == 'left' else 'left')
     with pytest.raises(ValueError):
-        node_factory(overrides)
+        node_factory(settings)
 
 
 def test_handoff_publishes_hold_before_zero_and_status(node):
@@ -412,17 +418,18 @@ def test_handoff_publishes_hold_before_zero_and_status(node):
 
 @pytest.mark.parametrize('step', [0, 2, 3, 5])
 @pytest.mark.parametrize('sign', [-1., 1.])
-def test_each_straight_step_direction_uses_speed_sign(node_factory, step, sign):
+@pytest.mark.parametrize('direction', ['left', 'right'])
+def test_each_straight_step_direction_uses_speed_sign(node_factory, step, sign, direction):
     speeds = [-.2, 0., .2, -.2, 0., .2]
     speeds[step] = sign * .1
-    n = node_factory({'linear_speeds': speeds})
+    n = node_factory({'direction': direction, direction + '.linear_speeds': speeds})
     start_parking(n)
     for _ in range(step):
         complete_step(n)
     n.tick()
     assert n.velocity_pub.messages[-1].linear.x == pytest.approx(sign * .1)
     x0, y0, yaw0 = n.step_origin
-    distance = n.param('distances')[step]
+    distance = n.motion_param('distances')[step]
     # Moving in the opposite direction must not complete this step.
     odom(n, x0-sign*distance*math.cos(yaw0), y0-sign*distance*math.sin(yaw0))
     n.tick()
@@ -434,7 +441,7 @@ def test_each_straight_step_direction_uses_speed_sign(node_factory, step, sign):
 @pytest.mark.parametrize('first_speed', [-.2, .2])
 def test_closed_loop_finishes_with_acceleration_and_braking(node_factory, direction, first_speed):
     n = node_factory({'direction': direction,
-                      'linear_speeds': [first_speed, 0., .2, -.2, 0., .2]})
+                      direction + '.linear_speeds': [first_speed, 0., .2, -.2, 0., .2]})
     start_parking(n)
     x = y = yaw = v = w = 0.0
     seen_steps = {0}
@@ -453,3 +460,46 @@ def test_closed_loop_finishes_with_acceleration_and_braking(node_factory, direct
     assert seen_steps == set(range(7))
     assert abs(v) <= n.param('stop_linear_tolerance')
     assert abs(w) <= n.param('stop_angular_tolerance')
+
+
+@pytest.mark.parametrize('direction', ['left', 'right'])
+def test_each_parking_direction_uses_its_own_six_distances_angles_and_speeds(node_factory, direction):
+    settings = {
+        'direction': direction,
+        'left.distances': [.40, 0., .20, .25, 0., .30],
+        'left.angles_deg': [0., 60., 0., 0., 75., 0.],
+        'left.linear_speeds': [-.12, 0., .14, -.10, 0., .16],
+        'left.angular_speeds': [0., .65, 0., 0., .85, 0.],
+        'right.distances': [.55, 0., .34, .28, 0., .70],
+        'right.angles_deg': [0., 95., 0., 0., 100., 0.],
+        'right.linear_speeds': [.18, 0., .16, -.14, 0., .12],
+        'right.angular_speeds': [0., 1.10, 0., 0., 1.30, 0.],
+    }
+    n = node_factory(settings)
+    start_parking(n)
+    sign = 1 if direction == 'left' else -1
+    for step in range(6):
+        n.tick()
+        command = n.velocity_pub.messages[-1]
+        x0, y0, yaw0 = n.step_origin
+        if step in (0, 2, 3, 5):
+            speed = settings[direction + '.linear_speeds'][step]
+            assert command.linear.x == pytest.approx(speed)
+            distance = math.copysign(settings[direction + '.distances'][step] / 2, speed)
+            odom(n, x0+distance*math.cos(yaw0), y0+distance*math.sin(yaw0))
+        else:
+            assert command.angular.z == pytest.approx(sign*settings[direction + '.angular_speeds'][step])
+            angle = sign*math.radians(settings[direction + '.angles_deg'][step]) / 2
+            odom(n, yaw=yaw0+angle)
+        n.tick()
+        assert n.phase == 'PARKING' and n.step == step and not n.settling
+        complete_step(n)
+    assert n.phase == 'EXIT'
+    assert json.loads(n.status_pub.messages[-1].data)['direction'] == direction
+
+
+def test_default_motion_arrays_are_not_shared_between_directions(node):
+    original = list(node.motion_param('distances', 'right'))
+    node.parameters['left.distances'][0] = .80
+    assert node.motion_param('distances', 'right') == original
+    assert node.motion_param('distances', 'left')[0] == .80

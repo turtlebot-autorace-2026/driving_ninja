@@ -2,21 +2,29 @@
 # bringup.launch.py가 설치된 이 파일을 읽는다. 일반 실행에는 --params-file로 전달한다.
 parking_detect_node:
   ros__parameters:
-    direction: right #right left
+    direction: right  # left=왼쪽 주차, right=오른쪽 주차
     white_ratio: 0.04
-    # 배열의 같은 위치가 같은 단계다. 모든 배열은 반드시 숫자 6개를 유지한다.
-    # 기본 동작:             0후진   1회전1  2전진   3후진   4회전2  5전진
-    # 이동 목표 [m, 양수]. 회전 단계는 0.0.
-    distances:             [0.55,   0.0,    0.32,   0.28,   0.0,    0.70]
-    # 회전 목표 [도, 양수]. 직선 단계는 0.0. 두 회전 모두 direction 방향.
-    angles_deg:            [0.0,    89.4,   0.0,    0.0,    87.3,   0.0]
-    # 최대 선속도 [m/s]. 음수=후진, 양수=전진. 목표 근처에서는 자동 감속.
-    # 예: 첫 단계를 전진으로 바꾸려면 아래 첫 -0.2를 0.2로 바꾼다. distances는 양수 유지.
-    linear_speeds: [0.2, 0.0, 0.2, -0.2, 0.0, 0.2]
-    # 최대 회전 속도 [rad/s, 양수]. 회전 방향은 위 direction에서 지정.
-    angular_speeds: [0.0, 1.2, 0.0, 0.0, 1.5, 0.0]
+    # direction: left는 left.* 배열, right는 right.* 배열을 사용한다.
+    # 각 배열은 숫자 6개다. 순서: 0직선 1회전 2직선 3직선 4회전 5직선.
+    # distances: 이동 거리 [m, 양수]. 회전 단계의 거리는 0.0.
+    # angles_deg: 회전각 [도, 양수]. 직선 단계의 각도는 0.0.
+    # linear_speeds: 최대 선속도 [m/s]. 양수=전진, 음수=후진.
+    # angular_speeds: 최대 각속도 [rad/s, 양수 크기]. left는 좌회전, right는 우회전.
+    # 양쪽 초기값에 현재 사용 중인 YAML 튜닝값을 복사했다. 각 쪽을 별도로 조정한다.
 
-    # 아래는 제어 조정값. 먼저 위의 거리·각도·속도를 조절한다.
+    # 왼쪽 주차의 6단계
+    left.distances:      [0.55, 0.0,  0.32, 0.28, 0.0,  0.70]
+    left.angles_deg:     [0.0,  89.4, 0.0,  0.0,  87.3, 0.0]
+    left.linear_speeds:  [0.2,  0.0,  0.2, -0.2,  0.0,  0.2]
+    left.angular_speeds: [0.0,  1.2,  0.0,  0.0,  1.5,  0.0]
+
+    # 오른쪽 주차의 6단계
+    right.distances:      [0.55, 0.0,  0.32, 0.28, 0.0,  0.70]
+    right.angles_deg:     [0.0,  89.4, 0.0,  0.0,  87.3, 0.0]
+    right.linear_speeds:  [0.2,  0.0,  0.2, -0.2,  0.0,  0.2]
+    right.angular_speeds: [0.0,  1.2,  0.0,  0.0,  1.5,  0.0]
+
+    # 아래는 양쪽 공통 제어값. 먼저 선택한 쪽의 거리·각도·속도를 조절한다.
     distance_tolerance: 0.01     # 목표 거리 허용 오차 [m]
     angle_tolerance_deg: 1.0    # 목표 회전 허용 오차 [도]
     distance_kp: 1.0            # 남은 거리 → 선속도
