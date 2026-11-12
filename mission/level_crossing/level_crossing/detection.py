@@ -42,7 +42,7 @@ class LevelCrossingDetection(Node):
             10
         )
         
-        self.state = True
+        self.state = False
         self.first = True
         self.bar_closed = False
         
@@ -104,14 +104,14 @@ class LevelCrossingDetection(Node):
         
         if not self.bar_closed and red_ratio > self.close_threshold:
             self.bar_closed = True
-            self.get_logger().info(f'Bar Closed - ratio={red_ratio:.3f}')
+            # self.get_logger().info(f'Bar Closed - ratio={red_ratio:.3f}')
             msg = Bool()
             msg.data = False
             self.laneStatePublisher.publish(msg)
             self.stop()
         
         elif self.bar_closed and red_ratio < self.open_threshold:
-            self.get_logger().info(f'Bar Opened - ratio={red_ratio:.3f}')
+            # self.get_logger().info(f'Bar Opened - ratio={red_ratio:.3f}')
             print('Terminate Level Crossing Detection\n')
             msg = Bool()
             msg.data = False
@@ -122,10 +122,10 @@ class LevelCrossingDetection(Node):
             self.destroy_node()
             rclpy.shutdown()
         
-        else: self.get_logger().info(f'Bar Waiting - ratio={red_ratio:.3f}')
-        cv2.rectangle(src, (self.roi_x1, self.roi_y1), (self.roi_x2, self.roi_y2), (0,255,0), 2)
-        cv2.imshow('src', src)
-        cv2.imshow('roi', roi)
+        # else: self.get_logger().info(f'Bar Waiting - ratio={red_ratio:.3f}')
+        # cv2.rectangle(src, (self.roi_x1, self.roi_y1), (self.roi_x2, self.roi_y2), (0,255,0), 2)
+        # cv2.imshow('src', src)
+        # cv2.imshow('roi', roi)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cv2.destroyAllWindows()
             self.destroy_node()

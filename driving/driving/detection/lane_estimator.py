@@ -141,7 +141,8 @@ class LanePath:
         'right': robot center line ~ image right edge, None: robot_x +- roi_half_width.'''
         cfg = self.cfg
         if self.roi_side == 'left':
-            x0, x1 = 0, int(cfg.robot_x)
+            # x0, x1 = 0, int(cfg.robot_x)
+            x0, x1 = 0, 200
         elif self.roi_side == 'right':
             x0, x1 = int(cfg.robot_x), BEV_W
         else:

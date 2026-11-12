@@ -3,7 +3,7 @@
 parking_detect_node:
   ros__parameters:
     direction: left  # left=왼쪽 주차, right=오른쪽 주차
-    white_ratio: 0.04
+    white_ratio: 0.06
     # direction: left는 left.* 배열, right는 right.* 배열을 사용한다.
     # 각 배열은 숫자 6개다. 순서: 0직선 1회전 2직선 3직선 4회전 5직선.
     # distances: 이동 거리 [m, 양수]. 회전 단계의 거리는 0.0.

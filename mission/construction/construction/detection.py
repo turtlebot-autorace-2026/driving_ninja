@@ -41,7 +41,7 @@ class ConstructionDetection(Node):
         # self.declare_parameter('creep_stop_distance', 0.005)  # 목표 차선이 이 거리 안에 오면 직진 종료 [m]
         # self.declare_parameter('creep_max_distance', 0.6)   # 차선 없이 저속 직진할 최대 거리 [m]
         self.declare_parameter('kp', 3.0)                 # 차선 offset P 게인
-        self.declare_parameter('kh', 5.0) #1.5                   # 차선 각도 게인
+        self.declare_parameter('kh', 1.5) #1.5                   # 차선 각도 게인
         self.declare_parameter('max_angular', 2.0)          # 차선 추종 최대 각속도 [rad/s]
         self.declare_parameter('turn_speed', 0.75)           # 제자리 회전 최대 각속도 [rad/s]
         self.declare_parameter('turn_min_speed', 0.5)       # 제자리 회전 최소 각속도 [rad/s]
@@ -217,14 +217,38 @@ class ConstructionDetection(Node):
         else:
             self.lane_error = self.lane_heading = None
 
+    # def followLane(self, yellow, white):
+    #     if yellow is None and white is None:
+    #         self.publishVelocity(self.param('lost_speed'), 0.0)
+    #         return
+    #     max_angular = self.param('max_angular')
+    #     angular = self.param('kp') * self.lane_error + self.param('kh') * self.lane_heading
+    #     self.publishVelocity(self.param('follow_speed'), float(np.clip(angular, -max_angular, max_angular)))
+
     def followLane(self, yellow, white):
         if yellow is None and white is None:
+            self.prev_follow_angular = 0.0
             self.publishVelocity(self.param('lost_speed'), 0.0)
             return
-        max_angular = self.param('max_angular')
-        angular = self.param('kp') * self.lane_error + self.param('kh') * self.lane_heading
-        self.publishVelocity(self.param('follow_speed'), float(np.clip(angular, -max_angular, max_angular)))
 
+        max_angular = self.param('max_angular')
+        target = (
+            self.param('kp') * self.lane_error
+            + self.param('kh') * self.lane_heading
+        )
+        target = float(np.clip(target, -max_angular, max_angular))
+
+        # 20Hz 기준: 각속도를 초당 최대 약 1rad/s씩 변경
+        step = 0.05
+        angular = float(np.clip(
+            target,
+            self.prev_follow_angular - step,
+            self.prev_follow_angular + step,
+        ))
+
+        self.prev_follow_angular = angular
+        self.publishVelocity(self.param('follow_speed'), angular)
+        
     def startAvoid(self, yellow, white):
         '''전방 물체를 만났을 때 보이는 차선으로 회피 방향을 정한다. 차선이 없으면 False.'''
         # 물체에 가려 차선이 사라졌으면 직전에 본 차선으로 판단한다.

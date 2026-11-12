@@ -149,7 +149,7 @@ class DrivingNode(Node):
         self.declare_parameter('pure_pursuit.v_lost', 0.05)
         self.declare_parameter('pure_pursuit.k_lat', 1.7)
         self.declare_parameter('pure_pursuit.max_ang', 3.0)
-        self.declare_parameter('pure_pursuit.k_v', 0.6)
+        self.declare_parameter('pure_pursuit.k_v', 0.3)
         self.declare_parameter('pure_pursuit.ang_smooth', 0.6)
         self.declare_parameter('pure_pursuit.v_single', 0.8)
 
@@ -165,7 +165,7 @@ class DrivingNode(Node):
         # 회전 표지판을 본 뒤 방향 ROI를 유지하는 시간 [s]
         self.declare_parameter('sign.roi_hold_sec', 30.0)
         # 회전 표지판 ROI의 높이 배율: 기본 ROI 높이(480 - roi_top_row)를 위쪽으로 늘린다.
-        self.declare_parameter('sign.roi_height_scale', 1.4)
+        self.declare_parameter('sign.roi_height_scale', 0.9)
 
         hz = self.get_parameter('yolo_lane.process_hz').value
         if not math.isfinite(hz) or hz <= 0:
