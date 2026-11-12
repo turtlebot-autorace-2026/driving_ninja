@@ -312,6 +312,14 @@ Basic_P의 `normal_angular_divisor` 등은 기존 소스 상수다. 이번 이�
 - **raw 입력:** 저장만 하며 세 토픽의 시간 동기화는 없다. 새 알고리즘에서 처리 시작 콜백과 입력 준비 조건을 연결해야 한다.
 - **기존 주석:** basic 일부 주석은 미검출 None, Sobel 해상도 오류 문구는 basic_sat을 언급한다. 실제 동작과 이 문서를 기준으로 읽는다.
 
+## 방향 표지 후 제자리 회전
+
+YOLO 주행 중 `/left`·`/right`가 새로 True가 되면 정지한 뒤 `/odom` 기준으로 해당 방향으로 회전하고, 기존 방향별 한쪽 ROI 추종을 재개한다. ROI 유지 시간은 회전 완료부터 센다. 같은 표지의 반복 True는 다시 회전시키지 않는다. 주차 완료 후의 기존 5초 좌회전 인계에는 이 제자리 회전을 추가하지 않는다.
+
+좌·우 각도는 `/driving`의 `turn.left_angle_deg`·`turn.right_angle_deg`로 각각 설정한다. 기본은 각각 `30.0`도이며 0~180도 범위다. 실행 중 변경값은 다음 회전부터 적용한다. 예: `ros2 param set /driving turn.left_angle_deg 25.0`, `ros2 param set /driving turn.right_angle_deg 35.0`. 재시작할 때는 `--ros-args -p turn.left_angle_deg:=25.0 -p turn.right_angle_deg:=35.0`으로 지정한다.
+
+회전 중 선속도는 0, 최대 각속도는 0.4rad/s다. 목표까지 남은 각도가 2도 이하이면 회전을 멈추고, 정지 후 최종 각도 오차와 관계없이 기존 한쪽 ROI 추종을 재개한다. odom이 0.5초 넘게 끊기거나 회전이 15초를 넘으면 정지한다. 실패 후에는 `/lane_state=false`로 해제한 뒤 다시 주행을 허용한다. 기존 0.1초 타이머를 사용하므로 동기 YOLO 추론에 따라 회전 제어 주기가 지연될 수 있다. 실차의 회전 각도는 별도 확인이 필요하다.
+
 ## 주차 노드와 제어 인계
 
 `mission/parking`은 P표지 → 가까운 왼쪽 절반 ROI로 접근 → 흰 정지선 → odom 기반6단계 → 고정 좌회전 인계 순서로 동작한다. 마지막 목표 도달 후 실제 정지를 확인하면 `/parking/lane_mode=intersection`을 한 번 발행한다. 주차 완료 후 `/left` 표지를 기다리는 단계는 없다. 왼쪽·오른쪽 주차의6단계 설정은 parking YAML에서 선택하며, 완료 이후의 진행은 둘 다 왼쪽이다.

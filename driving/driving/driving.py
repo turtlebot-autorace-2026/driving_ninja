@@ -12,6 +12,7 @@ from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
 from rcl_interfaces.msg import ParameterDescriptor
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, String
 
@@ -47,6 +48,11 @@ class DrivingNode(Node):
         self.roi_half: Optional[str] = None   # None | 'left' | 'right'
         self.parking_mode = ''  # '' | left | maneuver | exit | intersection | halt
         self.parking_exit_turn_since: Optional[float] = None
+        self.turn_side = None  # None | left | right | halt
+        self.turn_sign_active = {'left': False, 'right': False}
+        self.odom_yaw = self.odom_stamp = self.odom_time = None
+        self.odom_last_yaw = None
+        self.odom_stopped = False
 
         # 계산 객체를 재사용한다. 무거운 YOLO 모델은 첫 처리 때 한 번 읽는다.
 
@@ -147,7 +153,7 @@ class DrivingNode(Node):
         self.declare_parameter('pure_pursuit.v_max', 0.40)
         self.declare_parameter('pure_pursuit.v_max_intersection', 0.30)
         self.declare_parameter('pure_pursuit.v_lost', 0.05)
-        self.declare_parameter('pure_pursuit.k_lat', 1.7)
+        self.declare_parameter('pure_pursuit.k_lat', 2.16)   #2.14
         self.declare_parameter('pure_pursuit.max_ang', 3.0)
         self.declare_parameter('pure_pursuit.k_v', 0.3)
         self.declare_parameter('pure_pursuit.ang_smooth', 0.6)
@@ -163,9 +169,12 @@ class DrivingNode(Node):
             raise ValueError('parking.exit_follow_sec must be finite and positive.')
 
         # 회전 표지판을 본 뒤 방향 ROI를 유지하는 시간 [s]
-        self.declare_parameter('sign.roi_hold_sec', 30.0)
+        self.declare_parameter('sign.roi_hold_sec', 16.0)
         # 회전 표지판 ROI의 높이 배율: 기본 ROI 높이(480 - roi_top_row)를 위쪽으로 늘린다.
-        self.declare_parameter('sign.roi_height_scale', 0.9)
+        self.declare_parameter('sign.roi_height_scale', 1.0)
+        self.declare_parameter('turn.left_angle_deg', 23.0)
+        self.declare_parameter('turn.right_angle_deg', 10.0)
+        self.create_subscription(Odometry, '/odom', self.turn_odom_callback, qos_profile_sensor_data)
 
         hz = self.get_parameter('yolo_lane.process_hz').value
         if not math.isfinite(hz) or hz <= 0:
@@ -299,7 +308,8 @@ class DrivingNode(Node):
             self.last_yolo_processing_seconds = time.perf_counter() - started
 
     def lane_driving_enabled(self):
-        return self.lane_enabled and self.parking_mode not in ('maneuver', 'halt')
+        return (self.lane_enabled and self.parking_mode not in ('maneuver', 'halt')
+                and self.turn_side is None)
 
     def lane_roi_settings(self):
         if self.parking_mode in ('left', 'maneuver', 'exit'):
@@ -313,6 +323,7 @@ class DrivingNode(Node):
         was_enabled = self.lane_enabled
         self.lane_enabled = msg.data
         if not self.lane_enabled:
+            self.turn_side = None
             # 정지 신호마다 0 속도를 보낸다. 재개할 때 이전 영상을 쓰지 않도록 비운다.
             self.cmd_vel_pub.publish(Twist())
             self.reset_yolo()
@@ -341,14 +352,85 @@ class DrivingNode(Node):
         self.get_logger().info(state + ' Intersection Mode')
 
     def left_sign_callback(self, msg: Bool):
-        if (msg.data and self.parking_mode in ('', 'intersection')
-                and self.parking_exit_turn_since is None):
-            self.start_sign_roi('left')
+        self.turn_sign_callback('left', msg)
 
     def right_sign_callback(self, msg: Bool):
-        if (msg.data and self.parking_mode in ('', 'intersection')
-                and self.parking_exit_turn_since is None):
-            self.start_sign_roi('right')
+        self.turn_sign_callback('right', msg)
+
+    def turn_sign_callback(self, side, msg):
+        was_active = self.turn_sign_active[side]
+        self.turn_sign_active[side] = msg.data
+        if (not msg.data or was_active or self.turn_side is not None
+                or self.parking_mode not in ('', 'intersection')
+                or self.parking_exit_turn_since is not None):
+            return
+        if not self.lane_enabled or self.lane_detection_algorithm != 'yolo_lane':
+            self.start_sign_roi(side)
+            return
+        angle = self.get_parameter('turn.' + side + '_angle_deg').value
+        if not math.isfinite(angle) or not 0 <= angle <= 180:
+            self.halt_sign_turn('Turn angle must be in [0, 180] degrees')
+            return
+        self.turn_side, self.turn_angle = side, math.radians(angle)
+        self.turn_origin, self.turn_settling = None, False
+        self.turn_started = self.now_seconds()
+        self.turn_stop_stamp = self.get_clock().now().nanoseconds
+        self.roi_side = None
+        self.cmd_vel_pub.publish(Twist())
+        self.reset_yolo()
+
+    def turn_odom_callback(self, msg: Odometry):
+        q, v, w = msg.pose.pose.orientation, msg.twist.twist.linear, msg.twist.twist.angular
+        norm = math.sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w)
+        if (not all(math.isfinite(x) for x in (q.x, q.y, q.z, q.w, norm, v.x, v.y, w.z))
+                or norm < 1e-6):
+            self.odom_time = None
+            return
+        stamp = msg.header.stamp.sec * 1000000000 + msg.header.stamp.nanosec
+        if self.odom_stamp is not None and stamp <= self.odom_stamp:
+            if stamp < self.odom_stamp:
+                self.odom_time = None
+            return
+        x, y, z, qw = q.x/norm, q.y/norm, q.z/norm, q.w/norm
+        yaw = math.atan2(2 * (qw*z + x*y), 1 - 2 * (y*y + z*z))
+        self.odom_yaw = yaw if self.odom_last_yaw is None else self.odom_yaw + math.atan2(
+            math.sin(yaw - self.odom_last_yaw), math.cos(yaw - self.odom_last_yaw))
+        self.odom_last_yaw, self.odom_stamp, self.odom_time = yaw, stamp, self.now_seconds()
+        self.odom_stopped = math.hypot(v.x, v.y) <= 0.01 and abs(w.z) <= 0.03
+
+    def halt_sign_turn(self, reason):
+        self.turn_side = 'halt'
+        self.cmd_vel_pub.publish(Twist())
+        self.get_logger().error(reason + '; send lane_state=false before retrying')
+
+    def update_sign_turn(self):
+        if self.turn_side == 'halt':
+            return
+        now = self.now_seconds()
+        if (self.odom_time is None or now - self.odom_time > 0.5
+                or abs(now - self.odom_stamp * 1e-9) > 0.5
+                or not 0 <= now - self.turn_started <= 15.0):
+            self.halt_sign_turn('Turn odometry missing/stale or turn timed out')
+            return
+        twist = Twist()  # 제자리 회전: 선속도는 항상 0.
+        stopped = self.odom_stamp > self.turn_stop_stamp and self.odom_stopped
+        if self.turn_origin is None:
+            if stopped:
+                self.turn_origin = self.odom_yaw
+        else:
+            direction = 1 if self.turn_side == 'left' else -1
+            remaining = self.turn_angle - direction * (self.odom_yaw - self.turn_origin)
+            if self.turn_settling and stopped:
+                side, self.turn_side = self.turn_side, None
+                self.reset_yolo()
+                self.start_sign_roi(side)  # 회전 완료 뒤 기존 한쪽 ROI 추종을 시작한다.
+            elif not self.turn_settling:
+                if remaining <= math.radians(2.0):
+                    self.turn_settling = True
+                    self.turn_stop_stamp = self.get_clock().now().nanoseconds
+                else:
+                    twist.angular.z = direction * min(0.4, max(0.08, 1.5 * remaining))
+        self.cmd_vel_pub.publish(twist)
 
     def parking_mode_callback(self, msg: String):
         mode = msg.data.strip().lower()
@@ -357,6 +439,9 @@ class DrivingNode(Node):
             return
         if mode == self.parking_mode:
             return
+        if self.turn_side is not None:
+            self.turn_side = None
+            self.cmd_vel_pub.publish(Twist())
         if self.parking_exit_turn_since is not None:
             self.intersection_state_callback(Bool(data=False))
         self.parking_mode = mode
@@ -395,6 +480,9 @@ class DrivingNode(Node):
         self.get_logger().info(f'Turn sign {side}: lane ROI from center to the {side} edge for {hold:.0f} s')
 
     def check_sign_roi_timeout(self):
+        if self.turn_side is not None:
+            self.update_sign_turn()
+            return
         if self.parking_exit_turn_since is not None:
             if (self.now_seconds() - self.parking_exit_turn_since
                     >= self.get_parameter('parking.exit_follow_sec').value):
@@ -453,6 +541,7 @@ class DrivingNode(Node):
         self.pure_pursuit.reset()
 
     def selection_changed(self):
+        self.turn_side = None
         self.cmd_vel_pub.publish(Twist())
         self.reset_yolo()
 

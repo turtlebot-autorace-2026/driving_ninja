@@ -1,11 +1,13 @@
 """Parking handoff/ROI tests with no ROS context, model inference, or robot."""
 from types import SimpleNamespace
 from unittest.mock import Mock
+import math
 
 import numpy as np
 import pytest
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
+from nav_msgs.msg import Odometry
 
 from driving.driving import DrivingNode
 from driving.detection.lane_estimator import LaneConfig, LanePath
@@ -193,7 +195,7 @@ def test_invalid_duplicate_and_stop_modes(node):
     node.parking_mode_callback(String(data=''))
     assert node.lane_driving_enabled()
     node.right_sign_callback(Bool(data=True))
-    assert node.roi_side == 'right'
+    assert node.turn_side == 'right' and node.roi_side is None
 
 
 def test_parking_exit_left_follow_expires_after_five_seconds(node, monkeypatch):
@@ -248,3 +250,136 @@ def test_external_intersection_stop_ends_parking_exit_roi_early(node):
     node.intersection_state_callback(Bool(data=False))
     assert node.parking_exit_turn_since is None
     assert node.roi_side is None and not node.is_intersection
+
+
+@pytest.fixture
+def turn_node(node, monkeypatch):
+    node.test_clock = [10.0]
+    monkeypatch.setattr(node, 'get_clock', lambda: SimpleNamespace(now=lambda:
+                        SimpleNamespace(nanoseconds=int(node.test_clock[0] * 1e9))))
+    node.lane_state_callback(Bool(data=True))
+    return node
+
+
+def turn_odom(node, degrees, w=0.0, v=0.0, dt=0.05):
+    node.test_clock[0] += dt
+    msg = Odometry()
+    stamp = int(node.test_clock[0] * 1e9)
+    msg.header.stamp.sec, msg.header.stamp.nanosec = divmod(stamp, 1000000000)
+    msg.pose.pose.orientation.z = math.sin(math.radians(degrees) / 2)
+    msg.pose.pose.orientation.w = math.cos(math.radians(degrees) / 2)
+    msg.twist.twist.angular.z, msg.twist.twist.linear.x = float(w), float(v)
+    node.turn_odom_callback(msg)
+    return msg
+
+
+def begin_sign_turn(node, side, origin=0.0):
+    turn_odom(node, origin)
+    getattr(node, side + '_sign_callback')(Bool(data=True))
+    assert node.turn_side == side and not node.lane_driving_enabled()
+    assert node.roi_side is None
+    node.check_sign_roi_timeout()
+    assert node.turn_origin is None  # Pre-stop odometry cannot establish the reference.
+    turn_odom(node, origin)
+    node.check_sign_roi_timeout()
+    assert node.turn_origin == pytest.approx(math.radians(origin))
+    node.check_sign_roi_timeout()
+
+
+@pytest.mark.parametrize('side,angle,origin', [
+    ('left', 25.0, 0.0), ('right', 35.0, 0.0),
+    ('left', 30.0, 179.0), ('right', 30.0, -179.0)])
+def test_sign_turn_then_existing_direction_roi(turn_node, monkeypatch, side, angle, origin):
+    node = turn_node
+    original = node.get_parameter
+    monkeypatch.setattr(node, 'get_parameter', lambda name: SimpleNamespace(value=angle)
+                        if name == 'turn.' + side + '_angle_deg' else original(name))
+    begin_sign_turn(node, side, origin)
+    command = node.cmd_vel_pub.publish.call_args.args[0]
+    direction = 1 if side == 'left' else -1
+    assert command.linear.x == 0 and command.angular.z == pytest.approx(direction * .4)
+    prepare_yolo(node, target=(.3, .05), mode='both')
+    process_frame(node)
+    node.cmd_vel_pub.publish.assert_not_called()  # Lane inference continues without competing output.
+    assert node.lane_info_pub.publish.called and node.publish_debug_yolo.called
+    # A parameter update cannot change a turn already in progress.
+    monkeypatch.setattr(node, 'get_parameter', lambda name: SimpleNamespace(value=60.0)
+                        if name == 'turn.' + side + '_angle_deg' else original(name))
+    assert node.turn_angle == pytest.approx(math.radians(angle))
+    goal = origin + direction * angle
+    turn_odom(node, goal, w=direction * .1)
+    node.check_sign_roi_timeout()
+    assert node.turn_settling and node.roi_side is None
+    node.check_sign_roi_timeout()
+    assert node.turn_side == side  # Wait for a new stopped odometry sample.
+    turn_odom(node, goal)
+    finished_at = node.test_clock[0]
+    node.check_sign_roi_timeout()
+    assert node.turn_side is None and node.lane_driving_enabled()
+    assert node.lane_roi_settings() == (side, None)
+    assert node.roi_side_since == pytest.approx(finished_at)
+    assert node.yolo_msg is None
+    process_frame(node)
+    assert node.yolo_lane.detectLane.call_args.kwargs['roi_side'] == side
+    cfg = LanePath(LaneConfig(roi_top_row=150))
+    cfg.update([], side, node.get_parameter('sign.roi_height_scale').value)
+    assert cfg.roi_x_range() == ((0, 200) if side == 'left' else (326, 640))
+    # A repeated True cannot start another rotation or extend the ROI timer.
+    getattr(node, side + '_sign_callback')(Bool(data=True))
+    assert node.turn_side is None and node.roi_side_since == pytest.approx(finished_at)
+    node.test_clock[0] = finished_at + 30.0
+    node.check_sign_roi_timeout()
+    assert node.roi_side is None
+    getattr(node, side + '_sign_callback')(Bool(data=False))
+    getattr(node, side + '_sign_callback')(Bool(data=True))
+    assert node.turn_angle == pytest.approx(math.radians(60.0))
+
+
+@pytest.mark.parametrize('fault', ['stale', 'duplicate', 'invalid', 'timeout', 'overshoot'])
+def test_turn_fault_stops_but_overshoot_resumes_lane_following(turn_node, fault):
+    node = turn_node
+    begin_sign_turn(node, 'left')
+    if fault in ('stale', 'duplicate'):
+        msg = turn_odom(node, 1.0, w=.2)
+        node.test_clock[0] += .6
+        if fault == 'duplicate':
+            node.turn_odom_callback(msg)
+    elif fault == 'invalid':
+        node.turn_odom_callback(Odometry())  # Zero quaternion.
+    elif fault == 'timeout':
+        node.test_clock[0] += 16.0
+        turn_odom(node, 1.0)
+    else:
+        final_angle = math.degrees(node.turn_angle) + 10.0
+        turn_odom(node, final_angle)
+        node.check_sign_roi_timeout()
+        turn_odom(node, final_angle)
+    node.check_sign_roi_timeout()
+    if fault == 'overshoot':
+        assert node.turn_side is None and node.lane_driving_enabled()
+        assert node.lane_roi_settings() == ('left', None)
+        return
+    assert node.turn_side == 'halt' and not node.lane_driving_enabled()
+    command = node.cmd_vel_pub.publish.call_args.args[0]
+    assert command.linear.x == command.angular.z == 0.0
+    node.lane_state_callback(Bool(data=False))
+    assert node.turn_side is None
+    node.lane_state_callback(Bool(data=True))
+    assert node.lane_driving_enabled()
+
+
+def test_turn_cancels_for_stop_parking_or_algorithm_change(turn_node):
+    node = turn_node
+    begin_sign_turn(node, 'right')
+    node.lane_state_callback(Bool(data=False))
+    assert node.turn_side is None
+    node.lane_state_callback(Bool(data=True))
+    node.right_sign_callback(Bool(data=False))
+    begin_sign_turn(node, 'right')
+    node.parking_mode_callback(String(data='left'))
+    assert node.turn_side is None and node.lane_roi_settings() == (None, 'left')
+    node.parking_mode_callback(String(data=''))
+    node.right_sign_callback(Bool(data=False))
+    begin_sign_turn(node, 'right')
+    node.lane_detection_selection_callback(String(data='basic_sat'))
+    assert node.turn_side is None
