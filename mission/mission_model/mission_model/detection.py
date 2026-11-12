@@ -44,13 +44,13 @@ class MissionDetection(Node):
         self.declare_parameter('model_path', '')        # '' = the .onnx (else the only .pt) in models/
         self.declare_parameter('image_topic', '/camera2')
         self.declare_parameter('topics', TOPICS)
-        self.declare_parameter('conf', 0.7)
+        self.declare_parameter('conf', 0.85)
         self.declare_parameter('imgsz', 320)
         self.declare_parameter('device', 'cuda')      # ONNX Runtime CUDA by default; '' auto, 'cpu', '0', 'trt'
-        self.declare_parameter('min_box_size', 0.05)    # longer box side / image height: ignore far signs
+        self.declare_parameter('min_box_size', 0.15)    # longer box side / image height: ignore far signs
         self.declare_parameter('confirm_frames', 2)     # frames in a row with the sign before true
         self.declare_parameter('release_frames', 5)     # frames in a row without the sign before false
-        self.declare_parameter('process_hz', 10.0)
+        self.declare_parameter('process_hz', 15.0)
         self.declare_parameter('publish_debug', True)   # boxes on /debug2
         self.declare_parameter('show', False)           # cv2 debug window
         self.conf = self.get_parameter('conf').value

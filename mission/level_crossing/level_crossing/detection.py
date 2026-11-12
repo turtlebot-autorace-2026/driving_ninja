@@ -42,12 +42,12 @@ class LevelCrossingDetection(Node):
             10
         )
         
-        self.state = False
+        self.state = True
         self.first = True
         self.bar_closed = False
         
         self.roi_y1, self.roi_y2 = 250, 320
-        self.roi_x1, self.roi_x2 = 0, 440
+        self.roi_x1, self.roi_x2 = 0, 640
         self.close_threshold = 0.30
         self.open_threshold = 0.02
     
@@ -123,10 +123,9 @@ class LevelCrossingDetection(Node):
             rclpy.shutdown()
         
         else: self.get_logger().info(f'Bar Waiting - ratio={red_ratio:.3f}')
-        
-        # cv2.rectangle(src, (self.roi_x1, self.roi_y1), (self.roi_x2, self.roi_y2), (0,255,0), 2)
-        # cv2.imshow('src', src)
-        # cv2.imshow('roi', roi)
+        cv2.rectangle(src, (self.roi_x1, self.roi_y1), (self.roi_x2, self.roi_y2), (0,255,0), 2)
+        cv2.imshow('src', src)
+        cv2.imshow('roi', roi)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cv2.destroyAllWindows()
             self.destroy_node()
