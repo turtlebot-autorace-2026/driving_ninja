@@ -152,7 +152,7 @@ class DrivingNode(Node):
         self.declare_parameter('yolo_lane.lookahead_row', 317) # 300
         self.declare_parameter('yolo_lane.single_offset', 0.5)
         self.declare_parameter('yolo_lane.lane_width', 355.0)
-        self.declare_parameter('pure_pursuit.v_max', 0.40)
+        self.declare_parameter('pure_pursuit.v_max', 0.45)
         self.declare_parameter('pure_pursuit.v_max_intersection', 0.30)
         self.declare_parameter('pure_pursuit.v_lost', 0.05)
         self.declare_parameter('pure_pursuit.k_lat', 2.16)   #2.16

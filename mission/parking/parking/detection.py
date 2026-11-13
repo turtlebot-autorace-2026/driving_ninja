@@ -110,6 +110,7 @@ class ParkingDetection(Node):
                                  qos_profile_sensor_data)
         self.set_phase('IDLE', 'ready')
         self.create_timer(0.05, self.tick)
+        self.cross_pub = self.create_publisher(Bool, '/level_crossing_state', 10)
 
     def param(self, name):
         return self.get_parameter(name).value
@@ -212,7 +213,7 @@ class ParkingDetection(Node):
                 raise ValueError('invalid JPEG')
             h, w = src.shape[:2]
             # roi = src[int(h * .9):h, int(w * .2):int(w * .8)]
-            roi = src[:, :285]
+            roi = src[100:, :285]
 
             # cv2.imshow("bev", src)
             # cv2.waitKey(1)
@@ -233,6 +234,9 @@ class ParkingDetection(Node):
     def finish(self):
         # 마지막 정지를 확인한 뒤 표지 입력 없이 기존 좌회전 처리로 인계한다.
         self.set_phase('DONE', 'six odometry movements complete; fixed left turn handoff')
+        msg = Bool()
+        msg.data = True
+        self.cross_pub.publish(msg)
 
     def halt(self, reason):
         if self.phase == 'HALT':

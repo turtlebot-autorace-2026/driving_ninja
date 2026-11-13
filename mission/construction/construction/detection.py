@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import rclpy
+from driving.steering.pure_pursuit import LanePurePursuit
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -19,6 +20,7 @@ from std_msgs.msg import Bool, String
 WAIT, FOLLOW, BRAKE, TURN_OUT, CREEP, TURN_BACK, DONE, HALT = range(8)
 LEFT, RIGHT = 1.0, -1.0
 CREEP_DISTANCE = 0.25  # 회피 회전 후 고정 직진 거리 [m]
+STARTUP_SPEED_STEP = 0.03  # 출발 중 명령마다 올릴 수 있는 최대 선속도 [m/s]
 
 
 def wrapAngle(angle):
@@ -28,27 +30,29 @@ def wrapAngle(angle):
 class ConstructionDetection(Node):
     def __init__(self):
         super().__init__('construct_detect_node')
-        self.declare_parameter('lane_offset', 0.143)        # 따라갈 차선과의 거리 [m]
-        self.declare_parameter('obstacle_distance', 0.205)    # 전방 물체 판단 거리 [m]
-        self.declare_parameter('min_obstacle_points', 10)   # 물체로 볼 최소 점 개수 (전방 60개 중)
+        self.declare_parameter('obstacle_distance', 0.275)    # 전방 물체 판단 거리 [m]
+        self.declare_parameter('min_obstacle_points', 10)    # 물체로 볼 최소 점 개수 (전방 60개 중)
         self.declare_parameter('finish_timeout', 7.0)       # 마지막 회피 후 이 시간 동안 물체가 없으면 종료 [s]
         self.declare_parameter('last_lane_hold', 3.0)       # 물체 앞에서 차선이 없을 때 직전 차선을 쓸 시간 [s]
-        self.declare_parameter('lane_info_timeout', 0.5)    # 이보다 오래된 /lane_info는 미검출 [s]
-        self.declare_parameter('follow_speed', 0.3)#0.1         # 차선 추종 선속도 [m/s]
+        self.declare_parameter('lane_target_timeout', 0.5)  # 목표점 수신이 끊기면 차선 주행 정지 [s]
+        self.declare_parameter('follow_speed', 0.3)#0.3         # 차선 추종 선속도 [m/s]
         self.declare_parameter('lost_speed', 0.3) #0.05          # 차선 미검출 직진 선속도 [m/s]
         self.declare_parameter('creep_speed', 0.2)         # 회피 저속 직진 선속도 [m/s]
         # 기존 차선 기반 직진 종료 설정 (고정 거리 사용 중에는 비활성화)
         # self.declare_parameter('creep_stop_distance', 0.005)  # 목표 차선이 이 거리 안에 오면 직진 종료 [m]
         # self.declare_parameter('creep_max_distance', 0.6)   # 차선 없이 저속 직진할 최대 거리 [m]
-        self.declare_parameter('kp', 3.0)                 # 차선 offset P 게인
-        self.declare_parameter('kh', 1.5) #1.5                   # 차선 각도 게인
-        self.declare_parameter('max_angular', 2.0)          # 차선 추종 최대 각속도 [rad/s]
+        self.declare_parameter('max_angular', 5.0)          # 차선 추종 최대 각속도 [rad/s]
+        # driving이 추론한 곡선 경로의 목표점을 같은 LanePurePursuit에 전달한다.
+        self.declare_parameter('pure_pursuit.k_lat', 2.16)
+        self.declare_parameter('pure_pursuit.k_v', 0.3) # 0.3
+        self.declare_parameter('pure_pursuit.ang_smooth', 0.9)
+        self.declare_parameter('pure_pursuit.v_single', 0.8)
         self.declare_parameter('turn_speed', 0.75)           # 제자리 회전 최대 각속도 [rad/s]
         self.declare_parameter('turn_min_speed', 0.5)       # 제자리 회전 최소 각속도 [rad/s]
         self.declare_parameter('turn_tolerance', 0.02)      # 회전 완료 허용 오차 [rad]
         self.declare_parameter('stop_linear_tolerance', 0.005)   # 회피 전 정지로 볼 /odom 선속도 [m/s]
         self.declare_parameter('stop_angular_tolerance', 0.05)   # 회피 전 정지로 볼 /odom 각속도 [rad/s]
-        self.declare_parameter('stop_timeout', 5.0)         # 이 시간 안에 서지 않으면 그대로 회전 시작 [s]
+        self.declare_parameter('stop_timeout', 0.05)         # 이 시간 안에 서지 않으면 그대로 회전 시작 [s]
 
         # mission_model은 표지판 토픽을 latched(transient local)로 발행하므로 같은 QoS로 받는다.
         sign_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -64,11 +68,11 @@ class ConstructionDetection(Node):
             self.scanSubscriber_callback,
             qos_profile=qos_profile_sensor_data
         )
-        self.laneInfoSubscriber = self.create_subscription(
+        self.laneTargetSubscriber = self.create_subscription(
             String,
-            '/lane_info',
-            self.laneInfoSubscriber_callback,
-            10
+            '/construction/lane_target',
+            self.laneTargetSubscriber_callback,
+            1
         )
         self.odomSubscriber = self.create_subscription(
             Odometry,
@@ -99,10 +103,16 @@ class ConstructionDetection(Node):
         )
 
         self.state = WAIT
+        self.start_stop_until = 0.0
+        self.startup_speed = 0.0  # None이면 출발 가속 완료
         self.front_distance = None
         self.yellow = None
         self.white = None
         self.lane_time = None
+        self.lane_target = None
+        self.lane_mode = 'lost'
+        self.follow_twist = None
+        self.pure_pursuit = LanePurePursuit()
         self.last_lane = None           # 마지막으로 차선을 본 (yellow, white, 시각)
         self.yaw = None
         self.position = None
@@ -116,8 +126,6 @@ class ConstructionDetection(Node):
         self.creep_line = 'yellow'      # 저속 직진을 멈출 기준 차선
         self.avoid_count = 0
         self.last_obstacle_time = None
-        self.lane_error = None          # 현재 따라가는 차선의 offset 오차 [m]
-        self.lane_heading = None        # 현재 따라가는 차선의 로봇 기준 방향 [rad]
         self.lane_roi = None
         self.publishLaneRoi('')
         self.timer = self.create_timer(0.05, self.moving)
@@ -138,13 +146,28 @@ class ConstructionDetection(Node):
         if half == self.lane_roi:
             return
         self.lane_roi = half
+        self.resetLaneTracking()
         self.laneRoiPublisher.publish(String(data=half))
         self.get_logger().info(f'lane ROI: {half or "full"}')
 
     def publishVelocity(self, linear=0.0, angular=0.0):
+        # 정지/회피 때의 회전 명령을 다음 차선 추종의 평활화에 섞지 않는다.
+        if linear == 0.0 or self.state != FOLLOW:
+            self.pure_pursuit.reset()
         twist = Twist()
         twist.linear.x = linear
         twist.angular.z = angular
+        if linear == 0.0:
+            self.startup_speed = 0.0
+        elif self.startup_speed is not None:
+            speed_limit = self.startup_speed + STARTUP_SPEED_STEP
+            if linear <= speed_limit:
+                self.startup_speed = None
+            else:
+                self.startup_speed = speed_limit
+                twist.linear.x = speed_limit
+                # 선속도와 각속도를 함께 줄여 회전 반경을 유지한다.
+                twist.angular.z *= speed_limit / linear
         self.velPublisher.publish(twist)
 
     def constructionSubscriber_callback(self, msg):
@@ -153,6 +176,8 @@ class ConstructionDetection(Node):
             return
         self.get_logger().info('Construction start: lane_state False')
         self.publishLaneState(False)
+        self.publishVelocity()
+        # self.start_stop_until = self.now() + 3  # 공사 시작 시 3초 정지 비활성화
         self.state = FOLLOW
 
     def scanSubscriber_callback(self, msg):
@@ -183,16 +208,56 @@ class ConstructionDetection(Node):
         enough = len(close_ranges) >= self.param('min_obstacle_points')
         self.front_distance = float(np.mean(close_ranges)) if enough else None
 
-    def laneInfoSubscriber_callback(self, msg):
-        info = json.loads(msg.data)
-        self.yellow = info['yellow']
-        self.white = info['white']
-        self.yellow_heading = info['yellow_heading']
-        self.white_heading = info['white_heading']
-        self.lane_time = self.now()
-        if self.yellow is not None or self.white is not None:
-            self.last_lane = (self.yellow, self.white, self.lane_time)
-        self.updateLaneError()
+    def resetLaneTracking(self):
+        self.yellow = self.white = None
+        self.lane_time = None
+        self.lane_target = None
+        self.lane_mode = 'lost'
+        self.follow_twist = None
+        self.pure_pursuit.reset()
+
+    def laneTargetSubscriber_callback(self, msg):
+        '''driving이 이미 계산한 곡선 목표점 → 같은 LanePurePursuit (추가 추론 없음).'''
+        if self.state != FOLLOW:
+            return
+        # if self.now() < self.start_stop_until:
+        #     return
+        p = self.param
+        try:
+            info = json.loads(msg.data)
+            if not info['valid']:
+                self.resetLaneTracking()
+                self.publishVelocity()
+                return
+            # ROI 전환 전에 계산돼 늦게 도착한 목표점은 사용하지 않는다.
+            if info['roi_half'] != (self.lane_roi or None):
+                return
+            target, mode = info['target'], info['mode']
+            if target is not None and (not isinstance(target, list) or len(target) != 2):
+                raise ValueError('Lane target must contain x and y.')
+            yellow, white = info['yellow'], info['white']
+            if any(value is not None and not math.isfinite(value) for value in (yellow, white)):
+                raise ValueError('Lane distances must be finite.')
+            twist = self.pure_pursuit.makeTwist(
+                target, mode, v_max=p('follow_speed'), v_lost=p('lost_speed'),
+                k_lat=p('pure_pursuit.k_lat'), max_ang=p('max_angular'),
+                k_v=p('pure_pursuit.k_v'), ang_smooth=p('pure_pursuit.ang_smooth'),
+                v_single=p('pure_pursuit.v_single'),
+            )
+            self.yellow, self.white = yellow, white
+            self.lane_target, self.lane_mode = target, mode
+            self.follow_twist = twist
+            self.lane_time = self.now()
+            if self.yellow is not None or self.white is not None:
+                self.last_lane = (self.yellow, self.white, self.lane_time)
+        except Exception as error:
+            # 정상 미검출 직진과 영상/모델 오류의 정지를 구분한다.
+            self.get_logger().error(f'Construction lane target failed: {error}')
+            self.resetLaneTracking()
+            self.publishVelocity()
+            return
+        # 새 목표점마다 한 번만 발행한다. 장애물/종료 판단을 먼저 적용한다.
+        self.moving(lane_updated=True)
 
     def odomSubscriber_callback(self, msg):
         self.position = (msg.pose.pose.position.x, msg.pose.pose.position.y)
@@ -202,53 +267,21 @@ class ConstructionDetection(Node):
         self.angular_speed = msg.twist.twist.angular.z
 
     def visibleLanes(self):
-        '''(yellow, white). 오래된 /lane_info는 두 차선 모두 미검출로 본다.'''
-        if self.lane_time is None or self.now() - self.lane_time > self.param('lane_info_timeout'):
+        '''(yellow, white). 오래된 검출 결과는 회피 판단에 사용하지 않는다.'''
+        if self.lane_time is None or self.now() - self.lane_time > self.param('lane_target_timeout'):
             return None, None
         return self.yellow, self.white
 
-    def updateLaneError(self):
-        '''양쪽이 보이면 흰선, 한쪽만 보이면 보이는 차선 기준 offset 오차와 각도를 갱신한다.'''
-        offset = self.param('lane_offset')
-        if self.white is not None:
-            self.lane_error, self.lane_heading = self.white + offset, self.white_heading    # 흰선은 오른쪽(-)
-        elif self.yellow is not None:
-            self.lane_error, self.lane_heading = self.yellow - offset, self.yellow_heading  # 노란선은 왼쪽(+)
-        else:
-            self.lane_error = self.lane_heading = None
-
-    # def followLane(self, yellow, white):
-    #     if yellow is None and white is None:
-    #         self.publishVelocity(self.param('lost_speed'), 0.0)
-    #         return
-    #     max_angular = self.param('max_angular')
-    #     angular = self.param('kp') * self.lane_error + self.param('kh') * self.lane_heading
-    #     self.publishVelocity(self.param('follow_speed'), float(np.clip(angular, -max_angular, max_angular)))
-
-    def followLane(self, yellow, white):
-        if yellow is None and white is None:
-            self.prev_follow_angular = 0.0
-            self.publishVelocity(self.param('lost_speed'), 0.0)
+    def followLane(self):
+        # 같은 목표점으로 평활화를 반복하지 않고, 수신 때 계산한 명령만 사용한다.
+        if (self.follow_twist is None or self.lane_time is None
+                or self.now() - self.lane_time > self.param('lane_target_timeout')):
+            self.resetLaneTracking()
+            self.publishVelocity()
             return
+        self.publishVelocity(self.follow_twist.linear.x, self.follow_twist.angular.z)
 
-        max_angular = self.param('max_angular')
-        target = (
-            self.param('kp') * self.lane_error
-            + self.param('kh') * self.lane_heading
-        )
-        target = float(np.clip(target, -max_angular, max_angular))
 
-        # 20Hz 기준: 각속도를 초당 최대 약 1rad/s씩 변경
-        step = 0.05
-        angular = float(np.clip(
-            target,
-            self.prev_follow_angular - step,
-            self.prev_follow_angular + step,
-        ))
-
-        self.prev_follow_angular = angular
-        self.publishVelocity(self.param('follow_speed'), angular)
-        
     def startAvoid(self, yellow, white):
         '''전방 물체를 만났을 때 보이는 차선으로 회피 방향을 정한다. 차선이 없으면 False.'''
         # 물체에 가려 차선이 사라졌으면 직전에 본 차선으로 판단한다.
@@ -302,24 +335,34 @@ class ConstructionDetection(Node):
         self.publishLaneState(True)
         self.state = DONE
 
-    def moving(self):
+    def moving(self, lane_updated=False):
         if self.state in (WAIT, DONE, HALT):
             return
+        # 공사 시작 후 0.3초 동안 선속도와 각속도를 0으로 유지한다.
+        # if self.now() < self.start_stop_until:
+            # self.publishVelocity()
+            # return
         yellow, white = self.visibleLanes()
         obstacle = self.front_distance is not None and self.front_distance < self.param('obstacle_distance')
 
         if self.state == FOLLOW:
+            if (self.follow_twist is None or self.lane_time is None
+                    or self.now() - self.lane_time > self.param('lane_target_timeout')):
+                self.followLane()
+                return
             if obstacle:
                 self.get_logger().info(f'avg distance : {self.front_distance:.2f}')
                 self.publishLaneRoi('')     # 전방 물체: 원래 ROI로 차선을 다시 본다.
-                if not self.startAvoid(yellow, white):
+                if not self.startAvoid(yellow, white) and lane_updated:
                     self.publishVelocity(self.param('lost_speed'), 0.0)     # 판단할 차선이 보일 때까지 저속 직진
                 return
             # 종료 조건은 첫 회피 이후부터 본다: 마지막 복귀 회전 후 finish_timeout 동안 물체가 없으면 종료.
             if self.avoid_count > 0 and self.now() - self.last_obstacle_time >= self.param('finish_timeout'):
                 self.finish('no obstacle')
                 return
-            self.followLane(yellow, white)
+            # 20Hz 타이머는 회피·수신 끊김만 감시하고 차선 명령은 반복하지 않는다.
+            if lane_updated:
+                self.followLane()
 
         elif self.state == BRAKE:
             self.publishVelocity()
