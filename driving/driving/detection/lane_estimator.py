@@ -145,7 +145,7 @@ class LanePath:
             x0, x1 = 0, 480
         elif self.roi_side == 'right':
             # x0, x1 = int(cfg.robot_x), BEV_W
-            x0, x1 = 180, 640
+            x0, x1 = 260, 640
         else:
             x0 = int(max(0, cfg.robot_x - cfg.roi_half_width))
             x1 = int(min(BEV_W, cfg.robot_x + cfg.roi_half_width))

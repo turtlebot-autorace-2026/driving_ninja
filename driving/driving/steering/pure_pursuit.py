@@ -31,7 +31,7 @@ import numpy as np
 
 
 class PurePursuit:
-    def __init__(self, lookahead=0.25, v_max=0.15, k_lat=1.0, kappa_max=7.0, k_v=0.6, max_ang=1.2,
+    def __init__(self, lookahead=0.25, v_max=0.15, k_lat=1.0, kappa_max=20.0, k_v=0.6, max_ang=1.2,
                  ang_smooth=1.0, goal_tolerance=0.03):
         self.lookahead = lookahead            # m, distance to the target point
         self.v_max = v_max                    # m/s

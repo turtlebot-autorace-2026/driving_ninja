@@ -71,7 +71,7 @@ ros2 run parking detection --ros-args --params-file \
   /home/atom5/turtlebot3_ws/src/package_n/mission/parking/config/parking_sim.yaml
 ```
 
-현재 YAML과 코드의 `white_ratio`는 사용자가 조정한 `0.04`다. 이전 YAML의 `0.60`은 기존 bringup에서 파일을 읽지 않아 적용되지 않던 값이다.
+현재 YAML의 `white_ratio`는 사용자가 조정한 `0.03`이고 코드 기본값은 `0.04`다. 이전 YAML의 `0.60`은 기존 bringup에서 파일을 읽지 않아 적용되지 않던 값이다.
 
 Galactic에서는 `rclpy.init(args=args)`를 사용하고 초기화 후 SIGINT·SIGTERM 핸들러를 등록한다. 지원하지 않는 `SignalHandlerOptions`와 `signal_handler_options` 인자를 사용하지 않으며, 진행 중 종료 시 ROS context를 닫기 전에 HALT와 정지 속도를 발행한다.
 
@@ -81,22 +81,30 @@ Galactic에서는 `rclpy.init(args=args)`를 사용하고 초기화 후 SIGINT·
 
 ```bash
 ros2 topic pub --once /lane_state std_msgs/msg/Bool '{data: true}'
-# 표지 없이 수동으로 주차 접근을 요청할 때 (주행 허용도 필요):
+# 표지 없이 주차 접근 요청 또는 HALT에서 수동 재개 (주행 허용도 필요):
 ros2 topic pub --once /parking_state std_msgs/msg/Bool '{data: true}'
-# 진행 중 주차 취소:
+# 진행 중 주차 일시 정지:
 ros2 topic pub --once /parking_state std_msgs/msg/Bool '{data: false}'
-# 외부 주행 정지: 진행 중 주차 동작도 HALT로 취소된다.
+# 외부 주행 정지: 진행 중 주차 동작도 HALT로 정지한다.
 ros2 topic pub --once /lane_state std_msgs/msg/Bool '{data: false}'
 ros2 topic echo /parking/status std_msgs/msg/String --qos-durability transient_local
 ```
 
-완료·취소 후에는 P 표지나 True 입력으로 주차를 재시작하지 않는다. 다시 시험하려면 로봇을 정지·초기화하고 주행·표지·주차 노드를 재시작한다. 별도의 주차 초기화 서비스는 없다.
+완료 후에는 P 표지나 True 입력으로 주차를 재시작하지 않는다. HALT에서는 아래 조건에 따라 중단된 동작을 이어간다. 처음부터 다시 시험하려면 로봇을 정지·초기화하고 주행·표지·주차 노드를 재시작한다. 별도의 주차 초기화 서비스는 없다.
+
+HALT 동안은 20Hz로 0속도를 유지하고, 단계 번호와 시작 위치·누적 yaw 원점을 보존한다. 같은 odom 좌표계에서 재개하면 정지 중 잔여 이동을 포함하여 원래 목표까지 남은 거리·각도만 수행한다. `PARKING` 복귀 시 `maneuver`, `APPROACH` 복귀 시 `left` 모드를 다시 발행한다.
+
+- 일시적인 odom 누락·지연·잘못된 값, 잘못된 접근 영상은 정상 입력이 복구되면 자동 재개한다.
+- 외부 `/lane_state=False`, 수동 `/parking_state=False`, 단계·정지 확인 timeout은 자동 재개하지 않는다. 원인을 해결하고 `/lane_state=True`로 주행을 허용한 뒤 `/parking_state=True`로 재개를 요청한다. P 표지와 `/lane_state=True`만으로는 재개되지 않는다. HALT 중 외부 정지·수동 정지를 받으면 대기 중이던 자동 재개도 해제한다.
+- 재개에는 HALT 정지 명령 이후의 서로 다른 stamp를 가진 최신 odom 3개가 연속으로 필요하며, 모두 정지 속도 허용 오차 이하여야 한다. 접근 복귀는 정상 영상도 연속 3개 필요하다. 재개 확인 odom과 영상은 `odom_timeout` 이내의 최신 입력이어야 한다. 재개 요청을 먼저 보내도 이 조건을 만족할 때까지 0속도를 유지한다.
+- 정지 시간은 단계 timeout에서 제외한다. 단계 timeout 뒤 명시적으로 재시도하면 남은 목표를 유지하면서 해당 단계의 시간 예산을 새로 부여한다. 정지 확인 중이었다면 재개 명령 이후의 새 odom으로 다시 정지를 확인한 뒤 다음 단계로 넘어간다.
+- 주차 중 또는 HALT 중 odom stamp 역행·frame 변경, 진행 중 또는 HALT 중 노드 시간 역행, 노드 종료는 재개를 차단한다. 원래 목표의 기준을 신뢰할 수 없으므로 위치·시간 설정을 확인하고 노드를 재시작해야 한다.
 
 ## 동작 순서
 
 1. `IDLE`: `/parking=True`를 기억하고 `/lane_state=True`까지 기다린다. 표지가 사라져도 요청은 유지한다.
 2. `APPROACH`: 왼쪽 절반 ROI의 상단을250행으로 내려 x[76,326), y[250,480)에서 차선을 추종한다. 미검출이면 설정한 고정 좌회전 탐색, 재검출이면 기존 추종을 한다. 방향 표지판의 위쪽 확장은 사용하지 않는다. 이때부터 표지판 YOLO 추론을 중지하고 기존 True 표지 상태를 False로 해제한다.
-3. `PARKING`: `/bev`의 왼쪽 285열 전체 높이에서 HSV [0,0,160]~[180,40,255]의 흰 비율이 `white_ratio`(현재 코드 기본0.04)를 초과하면 차선 속도 출력을 막는다. 한 프레임의 조건으로 시작하며, 실제 정지를 확인한 뒤 아래 6단계를 실행한다.
+3. `PARKING`: `/bev`의 왼쪽 230열 전체 높이에서 HSV [0,0,160]~[180,40,255]의 흰 비율이 `white_ratio`(현재 코드 기본0.04)를 초과하면 차선 속도 출력을 막는다. 한 프레임의 조건으로 시작하며, 실제 정지를 확인한 뒤 아래 6단계를 실행한다. 빈 ROI는 오류로 처리하며 흰 픽셀이 없는 정상 영상의 비율은 0이다.
 4. `DONE`: 마지막 목표 도달 후 **정지 명령 이후의 새 odom으로 실제 정지**를 확인하면 `step=6`과 함께 `/parking/lane_mode=intersection`을 한 번 발행한다. `EXIT` 대기 상태나 `/left` 구독 없이 기존 교차로·좌회전 ROI로 바로 인계한다. 표지 인식도 이때 재개한다. driving은 왼쪽 ROI를 `parking.exit_follow_sec`(기본5초) 동안 유지한 뒤 ROI와 주차 출구 교차로 상태를 함께 해제한다. 이5초 동안 좌·우 표지나 같은 인계 메시지를 다시 받아도 방향·시작 시각을 바꾸지 않는다.
 
 | 단계 | 현재 YAML의 동작 | 거리(m) | 회전각(도) | 최대 선속도(m/s) | 최대 각속도 크기(rad/s) |
@@ -127,11 +135,11 @@ ros2 param set /driving pure_pursuit.v_lost 0.05
 
 ## 제어 연결
 
-주차는 다른 미션의 속도를 중계하지 않는다. driving과 미션들이 기존 `/cmd_vel`을 직접 사용하고, 주차는 고정동작과 정지·취소 때만 속도를 발행한다. 대기·접근·출차·완료 동안 주기적으로0속도를 보내지 않는다. 다른 직접 제어 미션과 순서대로 동작하는 구조이며 동시 실행 우선순위를 중재하는 기능은 없다.
+주차는 다른 미션의 속도를 중계하지 않는다. driving과 미션들이 기존 `/cmd_vel`을 직접 사용하고, 주차는 고정동작과 정지·취소 때만 속도를 발행한다. HALT 동안은 주기적으로 0속도를 유지하며 대기·접근·출차·완료 동안에는 보내지 않는다. 다른 직접 제어 미션과 순서대로 동작하는 구조이며 동시 실행 우선순위를 중재하는 기능은 없다.
 
 - `/lane_state` Bool: 외부 주행 허용. 주차도 구독하지만 이 토픽에 자기 정지 신호를 재발행하지 않는다.
 - `/parking` Bool: mission_model의 P표지 상태. 기존 연속 검출 확인을 재사용한다. parking은 `/left`를 구독하지 않는다.
-- `/parking_state` Bool: 수동 시작 요청·취소 입력. 자기재발행하지 않는다.
+- `/parking_state` Bool: True는 수동 시작 요청 또는 HALT 재개 요청, False는 일시 정지 입력. 자기재발행하지 않는다.
 - `/odom` Odometry: 위치·자세·실제 속도 입력. 주차 6단계를 실행하는 동안 최신 메시지가 필요하다.
 - `/parking/status` String: 상태 변경, 각 단계 시작, 목표 도달 시 `phase`, `step`, `reason`, `direction`을 담은 JSON을 발행한다. `step`은0~5이며6은 모든 동작 완료다.
 - `/parking/lane_mode` String: `left`는 가까운 왼쪽ROI와 미검출 시 고정 좌회전 탐색, `maneuver`는 검출하면서 차선 속도 출력만 중지, `halt`는 중지 유지, `intersection`은 6단계 완료 후 주차 제한 해제·5초 좌회전 인계, 빈 문자열은 일반 상태다.
@@ -142,11 +150,13 @@ ros2 param set /driving pure_pursuit.v_lost 0.05
 
 외부 `/lane_state=True`는 `maneuver`/`halt`의 차선 출력을 강제로 켜지 않는다. 외부 False, 수동 취소, 잘못된 입력 영상, 진행 중 시뮬레이션 시간 역행은 HALT로 정지한다. 진행 중 노드를 정상 종료할 때도 정지한다. 종료 뒤 ROS publish나 `/parking_state` 자기구독 루프는 없다.
 
-6단계 후 좌회전 인계는 `/left` 수신과 무관하게 한 모드 메시지로 처리한다. 주차 완료 전 외부 정지·취소·odom 오류가 발생하면 HALT로 끝내고 좌회전으로 인계하지 않는다. 이후 방향 표지와 교차로 상태 메시지는 기존 방식대로 처리된다. 별도의 속도 중계 remap은 필요 없다. 주차의 상태·모드·진입 시 정지·로그는 `set_phase()` 한 곳에서 함께 갱신한다.
+6단계 후 좌회전 인계는 `/left` 수신과 무관하게 한 모드 메시지로 처리한다. 주차 완료 전 외부 정지·취소·odom 오류가 발생하면 HALT 동안 좌회전으로 인계하지 않는다. 재개 후 남은 목표와 마지막 정지를 확인해야 인계한다. 이후 방향 표지와 교차로 상태 메시지는 기존 방식대로 처리된다. 별도의 속도 중계 remap은 필요 없다. 주차의 상태·모드·진입 시 정지·로그는 `set_phase()` 한 곳에서 함께 갱신한다.
 
 ## 확인 범위
 
 관련 검사는 [주차 제어](test/test_parking_control.py), [driving 연결](../../driving/test/test_parking_handoff.py), [표지 인식 중지](../mission_model/test/test_parking_sign_pause.py)에 있다.
+
+HALT 재개 검사는 좌·우 6단계 각각의 남은 목표 보존, 정지 중 잔여 이동, 긴 중단 시간의 timeout 제외, 최신 정지 odom·영상의 연속 확인, 수동 재개와 외부 정지 우선, HALT 중 좌표·시간 초기화 시 복귀 차단, 초기·마지막 정지 확인 중 재개를 확인한다. ROS publisher는 메모리 기록기로 대체하며 실제 로봇에는 명령을 보내지 않는다.
 
 ROS context와 모델을 대체한 검사로 흰선 ROI와 6단계 거리·각도·종료, 후진 부호·횡방향 이동 제외, ±180° 경계 회전, 감속·방향 보정, 새 odom을 통한 정지 확인, odom 누락·지연·중복·미래 stamp·frame 변경·시간 역행, 시간 초과, 외부 정지·취소, 출차 인계를 확인한다. 좌·우에 서로 다른 거리·각도·속도를 지정한6단계를 각각 실행하고 선택한 쪽의 값만 사용하는지 확인한다. 각 직선 단계는 선속도 부호에 따라 전진·후진하는지 확인한다. 가감속을 포함한 단순 운동 모델에서 첫 단계를 전진 또는 후진으로 설정하고 좌·우 주차 모두 표지판 없이 DONE·고정 좌회전 인계로 끝나는지 확인한다. driving의 BEV 영상 발행은 인계 검사에서 별도 mock으로 대체한다.
 

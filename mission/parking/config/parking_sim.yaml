@@ -3,7 +3,7 @@
 parking_detect_node:
   ros__parameters:
     direction: left  # left=왼쪽 주차, right=오른쪽 주차
-    white_ratio: 0.06
+    white_ratio: 0.03
     # direction: left는 left.* 배열, right는 right.* 배열을 사용한다.
     # 각 배열은 숫자 6개다. 순서: 0직선 1회전 2직선 3직선 4회전 5직선.
     # distances: 이동 거리 [m, 양수]. 회전 단계의 거리는 0.0.
@@ -13,7 +13,7 @@ parking_detect_node:
     # 양쪽 초기값에 현재 사용 중인 YAML 튜닝값을 복사했다. 각 쪽을 별도로 조정한다.
 
     # 왼쪽 주차의 6단계
-    left.distances:      [0.5, 0.0,  0.32, 0.35, 0.0,  0.40]
+    left.distances:      [0.5, 0.0,  0.32, 0.30, 0.0,  0.40]
     left.angles_deg:     [0.0,  89.4, 0.0,  0.0,  87.3, 0.0]
     left.linear_speeds:  [0.2,  0.0,  0.2, -0.2,  0.0,  0.2]
     left.angular_speeds: [0.0,  1.2,  0.0,  0.0,  1.5,  0.0]

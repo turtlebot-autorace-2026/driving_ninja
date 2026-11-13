@@ -169,7 +169,8 @@ class MissionDetection(Node):
         except Exception as e:
             self.get_logger().error(f'Error decoding compressed image: {e}')
             return
-
+        
+        src = src[:, int(src.shape[1] * 0.10):]
         detections = []
         if not self.signs_paused:
             detections = self.detect(src)

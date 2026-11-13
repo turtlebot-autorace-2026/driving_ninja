@@ -86,8 +86,10 @@ class TrafficLightDetection(Node):
         return False
     
     def checkGreenLight(self, src):
-        threshold = 1000
-        if np.count_nonzero(src) > threshold:
+        zero = np.count_nonzero(src)
+        #self.get_logger().info(f'green: {zero}')
+        threshold = 400
+        if zero > threshold:
             self.count += 1
             if self.count > 5:
                 return True
@@ -96,8 +98,8 @@ class TrafficLightDetection(Node):
     def videoSubscriber_callback(self, msg):
         roixs=320
         roixe=640
-        roiys=0
-        roiye=312
+        roiys=200
+        roiye=420 #312
     
         if not self.state: return
         try:
@@ -134,10 +136,10 @@ class TrafficLightDetection(Node):
         # cv2.imshow('src', src)
         # cv2.imshow('src_red', src_red)
         # cv2.imshow('src_green', src_green)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            cv2.destroyAllWindows()
-            self.destroy_node()
-            rclpy.shutdown()
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     cv2.destroyAllWindows()
+        #     self.destroy_node()
+        #     rclpy.shutdown()
 
 def main():
     rclpy.init()

@@ -73,6 +73,8 @@ class DrivingNode(Node):
         self.debug_pub2 = self.create_publisher(CompressedImage, 'debug2', 10)
         self.debug_bev = self.create_publisher(CompressedImage, 'bev', 10)
         self.lane_info_pub = self.create_publisher(String, 'lane_info', 10)
+        self.construction_lane_target_pub = self.create_publisher(
+            String, '/construction/lane_target', 10)
 
 
         ## 카메라 소스 입력
@@ -147,17 +149,17 @@ class DrivingNode(Node):
         self.declare_parameter('yolo_lane.camera_height', 0.129)
         self.declare_parameter('yolo_lane.roi_top_row', 150)#220
         self.declare_parameter('yolo_lane.roi_half_width', 250)
-        self.declare_parameter('yolo_lane.lookahead_row', 300)
+        self.declare_parameter('yolo_lane.lookahead_row', 317) # 300
         self.declare_parameter('yolo_lane.single_offset', 0.5)
         self.declare_parameter('yolo_lane.lane_width', 355.0)
         self.declare_parameter('pure_pursuit.v_max', 0.40)
         self.declare_parameter('pure_pursuit.v_max_intersection', 0.30)
         self.declare_parameter('pure_pursuit.v_lost', 0.05)
-        self.declare_parameter('pure_pursuit.k_lat', 2.16)   #2.14
+        self.declare_parameter('pure_pursuit.k_lat', 2.16)   #2.16
         self.declare_parameter('pure_pursuit.max_ang', 3.0)
-        self.declare_parameter('pure_pursuit.k_v', 0.3)
-        self.declare_parameter('pure_pursuit.ang_smooth', 0.6)
-        self.declare_parameter('pure_pursuit.v_single', 0.8)
+        self.declare_parameter('pure_pursuit.k_v', 0.3) ## 0.3?
+        self.declare_parameter('pure_pursuit.ang_smooth', 0.9)#0.6   0.9
+        self.declare_parameter('pure_pursuit.v_single', 0.7)
 
         # 주차 진입(left 모드) ROI와 미검출 고정 좌회전 탐색 설정.
         self.declare_parameter('parking.approach_roi_top_row', 250)  # BEV y[250,480)
@@ -172,7 +174,7 @@ class DrivingNode(Node):
         self.declare_parameter('sign.roi_hold_sec', 16.0)
         # 회전 표지판 ROI의 높이 배율: 기본 ROI 높이(480 - roi_top_row)를 위쪽으로 늘린다.
         self.declare_parameter('sign.roi_height_scale', 1.0)
-        self.declare_parameter('turn.left_angle_deg', 23.0)
+        self.declare_parameter('turn.left_angle_deg', 18.0) #23.0
         self.declare_parameter('turn.right_angle_deg', 10.0)
         self.create_subscription(Odometry, '/odom', self.turn_odom_callback, qos_profile_sensor_data)
 
@@ -285,6 +287,17 @@ class DrivingNode(Node):
                 intersection=self.is_intersection,
                 v_max_intersection=p('pure_pursuit.v_max_intersection'),
             )
+            # 공사 노드는 추론을 반복하지 않고 같은 곡선 경로의 목표점으로 조향한다.
+            # lane_state=False일 때도 검출 결과를 발행한다. None은 정상 미검출이다.
+            self.construction_lane_target_pub.publish(String(data=json.dumps({
+                'valid': True,
+                'stamp': {'sec': msg.header.stamp.sec, 'nanosec': msg.header.stamp.nanosec},
+                'target': target,
+                'mode': mode,
+                'yellow': yellow,
+                'white': white,
+                'roi_half': roi_half,
+            })))
             # 사용자가 활성화한 주차 진입 미검출 고정 좌회전 탐색.
             if self.parking_mode == 'left' and target is None:
                 speed, angular = p('parking.search_speed'), p('parking.search_angular')
@@ -301,6 +314,7 @@ class DrivingNode(Node):
             # 모델 로딩/추론 실패도 노드를 종료시키지 않는다. 주행 중이면 정지한다.
             # 정상 미검출(None → v_lost 직진)과는 별개의 경로다.
             self.get_logger().error(f'YOLO processing failed: {error}')
+            self.construction_lane_target_pub.publish(String(data=json.dumps({'valid': False})))
             if self.lane_driving_enabled():
                 self.cmd_vel_pub.publish(Twist())
             self.reset_yolo()

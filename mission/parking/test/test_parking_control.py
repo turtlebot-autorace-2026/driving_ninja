@@ -183,7 +183,7 @@ def test_parking_no_longer_subscribes_to_exit_sign(node):
 
 
 @pytest.mark.parametrize('step', range(6))
-def test_external_stop_cancels_every_step_without_restart(node, step):
+def test_external_stop_requires_explicit_resume_at_every_step(node, step):
     start_parking(node)
     for _ in range(step):
         complete_step(node)
@@ -196,7 +196,17 @@ def test_external_stop_cancels_every_step_without_restart(node, step):
     node.sign_callback(Bool(data=True))
     node.clock[0] += 5
     node.tick()
-    assert node.phase == 'HALT' and len(node.velocity_pub.messages) == count
+    assert node.phase == 'HALT'
+    assert all(cmd == Twist() for cmd in node.velocity_pub.messages[count:])
+    origin = node.step_origin
+    for _ in range(3):
+        odom(node)
+        node.tick()
+    assert node.phase == 'HALT'  # lane True and a P sign cannot release an external stop.
+    node.state_callback(Bool(data=True))
+    node.tick()
+    assert node.phase == 'PARKING' and node.step == step and node.step_origin == origin
+    assert node.mode_pub.messages[-1].data == 'maneuver'
 
 
 def test_time_alone_does_not_complete_step_and_step_timeout_halts(node):
@@ -553,3 +563,231 @@ def test_stop_during_final_settling_never_releases_to_left_follow(node, action):
     assert node.phase == 'HALT'
     assert node.mode_pub.messages[-1].data == 'halt'
     assert all(m.data != 'intersection' for m in node.mode_pub.messages)
+
+
+@pytest.mark.parametrize('direction', ['left', 'right'])
+@pytest.mark.parametrize('step', range(6))
+def test_odom_recovery_preserves_remaining_goal_and_excludes_pause(node_factory, direction, step):
+    n = node_factory({'direction': direction})
+    start_parking(n)
+    for _ in range(step):
+        complete_step(n)
+    origin, started = n.step_origin, n.step_started
+    x0, y0, yaw0 = origin
+    straight = step in (0, 2, 3, 5)
+    speed = n.motion_param('linear_speeds')[step]
+    sign = math.copysign(1., speed) if straight else (1. if direction == 'left' else -1.)
+    goal = (n.motion_param('distances')[step] if straight
+            else math.radians(n.motion_param('angles_deg')[step]))
+
+    def progress(fraction):
+        if straight:
+            odom(n, x0+sign*goal*fraction*math.cos(yaw0),
+                 y0+sign*goal*fraction*math.sin(yaw0))
+        else:
+            odom(n, yaw=yaw0+sign*goal*fraction)
+
+    progress(.5)
+    n.tick()
+    n.clock[0] += n.param('odom_timeout') + .1
+    n.tick()
+    assert n.phase == 'HALT'
+    paused_at = n.clock[0]
+    n.clock[0] += 60.  # The pause is longer than every step timeout.
+    for sample in range(3):
+        progress(.6)  # Coasting during the stop also counts toward the original goal.
+        n.tick()
+        if sample < 2:
+            assert n.phase == 'HALT' and n.velocity_pub.messages[-1] == Twist()
+    assert n.phase == 'PARKING' and n.step == step and n.step_origin == origin
+    assert n.step_started == pytest.approx(started+n.clock[0]-paused_at)
+    assert not n.settling and n.mode_pub.messages[-1].data == 'maneuver'
+    n.tick()
+    if straight:
+        expected = sign*min(abs(speed), max(n.param('min_linear_speed'),
+                                           n.param('distance_kp')*goal*.4))
+        assert n.velocity_pub.messages[-1].linear.x == pytest.approx(expected)
+    else:
+        expected = sign*min(n.motion_param('angular_speeds')[step],
+                            max(n.param('min_angular_speed'), n.param('angle_kp')*goal*.4))
+        assert n.velocity_pub.messages[-1].angular.z == pytest.approx(expected)
+    complete_step(n)  # The original target, rather than a new full movement, finishes this step.
+    assert n.phase == ('DONE' if step == 5 else 'PARKING')
+
+
+def test_recovery_requires_consecutive_fresh_stopped_odometry(node):
+    start_parking(node)
+    node.clock[0] += 1.
+    node.tick()
+    for _ in range(2):
+        odom(node)
+        node.tick()
+    for _ in range(4):
+        odom(node, stamp=node.odom_stamp)  # Duplicates do not count as new confirmations.
+        node.tick()
+    assert node.phase == 'HALT'
+    odom(node, v=.1)
+    node.tick()
+    for _ in range(2):
+        odom(node)
+        node.tick()
+    assert node.phase == 'HALT'
+    odom(node, dt=1.)  # A gap restarts the confirmation count, even with a fresh new stamp.
+    node.tick()
+    assert node.phase == 'HALT' and node.recovery_samples == 1
+    odom(node, x=float('nan'))
+    assert node.recovery_samples == 0
+    for _ in range(3):
+        odom(node)
+        node.tick()
+    assert node.phase == 'PARKING'
+
+
+def test_camera_error_recovers_approach_only_after_good_frames_and_stopped_odom(node):
+    approach(node)
+    odom(node)
+    node.camera_callback(CompressedImage(data=b'invalid'))
+    for _ in range(2):
+        odom(node)
+        node.camera_callback(image())
+        node.tick()
+    assert node.phase == 'HALT'
+    node.camera_callback(CompressedImage(data=b'invalid'))
+    for _ in range(2):
+        odom(node)
+        node.camera_callback(image())
+        node.tick()
+    assert node.phase == 'HALT'
+    odom(node)
+    node.camera_callback(image())
+    node.tick()
+    assert node.phase == 'APPROACH' and node.mode_pub.messages[-1].data == 'left'
+    node.camera_callback(image())
+    assert node.phase == 'PARKING'
+
+
+def test_manual_cancel_in_approach_requires_explicit_request_and_restores_left(node):
+    approach(node)
+    node.state_callback(Bool(data=False))
+    for _ in range(3):
+        odom(node)
+        node.camera_callback(image(False))
+        node.tick()
+    assert node.phase == 'HALT'
+    node.state_callback(Bool(data=True))
+    node.tick()
+    assert node.phase == 'APPROACH' and node.mode_pub.messages[-1].data == 'left'
+
+
+@pytest.mark.parametrize('reason', ['external', 'manual'])
+def test_explicit_stop_overrides_pending_automatic_recovery(node, reason):
+    start_parking(node)
+    node.clock[0] += 1.
+    node.tick()
+    if reason == 'external':
+        node.lane_state_callback(Bool(data=False))
+    else:
+        node.state_callback(Bool(data=False))
+    for _ in range(3):
+        odom(node)
+        node.tick()
+    node.lane_state_callback(Bool(data=True))
+    node.tick()
+    assert node.phase == 'HALT'
+    node.state_callback(Bool(data=True))
+    node.tick()
+    assert node.phase == 'PARKING'
+
+
+@pytest.mark.parametrize('reset', ['frame', 'stamp', 'node_clock'])
+def test_reset_during_halt_blocks_automatic_and_explicit_resume(node, reset):
+    start_parking(node)
+    origin = node.step_origin
+    node.clock[0] += 1.
+    node.tick()
+    if reset == 'frame':
+        odom(node, frame='map')
+    elif reset == 'stamp':
+        odom(node, stamp=node.odom_stamp-1)
+    else:
+        node.clock[0] -= .1
+        node.tick()
+    node.state_callback(Bool(data=True))
+    for _ in range(3):
+        odom(node)
+        node.tick()
+    assert node.phase == 'HALT' and node.step_origin == origin
+    assert node.velocity_pub.messages[-1] == Twist()
+
+
+@pytest.mark.parametrize('override', [None, 'external', 'manual'])
+def test_timeout_retry_keeps_goal_and_grants_new_step_budget(node, override):
+    start_parking(node)
+    origin = node.step_origin
+    odom(node, x=-.1, dt=node.param('step_timeouts')[0])
+    node.tick()
+    assert node.phase == 'HALT' and 'timed out' in node.halt_reason
+    if override == 'external':
+        node.lane_state_callback(Bool(data=False))
+        node.lane_state_callback(Bool(data=True))
+    elif override == 'manual':
+        node.state_callback(Bool(data=False))
+    node.state_callback(Bool(data=True))
+    for _ in range(3):
+        odom(node)
+        node.tick()
+    assert node.phase == 'PARKING' and node.step_origin == origin
+    assert node.step_started == pytest.approx(node.clock[0])
+    node.tick()
+    assert node.velocity_pub.messages[-1].linear.x == pytest.approx(-.1)
+
+
+def test_stop_timeout_retry_rechecks_stop_without_advancing_initial_step(node):
+    approach(node)
+    odom(node, v=.1)
+    node.camera_callback(image())
+    odom(node, v=.1, dt=node.param('stop_timeout'))
+    node.tick()
+    assert node.phase == 'HALT' and node.halt_reason == 'stop confirmation timed out'
+    node.state_callback(Bool(data=True))
+    for _ in range(3):
+        odom(node)
+        node.tick()
+    assert node.phase == 'PARKING' and node.step_origin is None and node.settling
+    odom(node)
+    node.tick()
+    assert node.step == 0 and node.step_origin is not None and not node.settling
+
+
+@pytest.mark.parametrize('at_target', [False, True])
+def test_resume_during_stop_confirmation_preserves_stage_and_requires_new_stop(node, at_target):
+    if at_target:
+        reach_last_target(node)
+    else:
+        approach(node)
+        odom(node, v=.1)
+        node.camera_callback(image())
+    step, origin = node.step, node.step_origin
+    node.clock[0] += 1.
+    node.tick()
+    for _ in range(3):
+        odom(node)
+        node.tick()
+    assert node.phase == 'PARKING' and node.settling
+    assert node.step == step and node.step_origin == origin
+    node.tick()
+    assert node.phase == 'PARKING' and node.step == step
+    odom(node)
+    node.tick()
+    if at_target:
+        assert node.phase == 'DONE' and node.step == 6
+        assert [msg.data for msg in node.mode_pub.messages].count('intersection') == 1
+    else:
+        assert node.phase == 'PARKING' and node.step == 0 and not node.settling
+
+
+def test_empty_camera_roi_halts_before_color_conversion(node, monkeypatch):
+    approach(node)
+    monkeypatch.setattr(cv2, 'imdecode', lambda *args: np.empty((0, 0, 3), np.uint8))
+    node.camera_callback(CompressedImage(data=b'invalid'))
+    assert node.phase == 'HALT' and node.halt_reason == 'invalid camera image'

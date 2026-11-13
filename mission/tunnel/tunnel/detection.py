@@ -12,8 +12,8 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, PoseStamped, Twist
 from rclpy.qos import QoSProfile, DurabilityPolicy
 
 
-INITIAL_POSE = [-0.486, -0.696, -0.081, 0.997]
-GOAL_POSE = [0.745, 1.012, 0.734, 0.679]
+INITIAL_POSE = [0.360, 0.011, 0.017, 1.000]
+GOAL_POSE = [1.860, 1.478, 0.606, 0.795]
 
 class TunnelDetection(Node):
     def __init__(self):

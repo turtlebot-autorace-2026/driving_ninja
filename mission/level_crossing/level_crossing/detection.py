@@ -42,13 +42,13 @@ class LevelCrossingDetection(Node):
             10
         )
         
-        self.state = False
+        self.state = True
         self.first = True
         self.bar_closed = False
         
-        self.roi_y1, self.roi_y2 = 250, 320
-        self.roi_x1, self.roi_x2 = 0, 640
-        self.close_threshold = 0.30
+        self.roi_y1, self.roi_y2 = 250, 350 #200, 300
+        self.roi_x1, self.roi_x2 = 0, 500
+        self.close_threshold = 0.20
         self.open_threshold = 0.02
     
     def stateSubscriber_callback(self, msg):
@@ -99,7 +99,7 @@ class LevelCrossingDetection(Node):
             roi = self.componentsWithStatsFilter(roi)
             red_ratio = np.count_nonzero(roi)/(roi.shape[0]*roi.shape[1])
         except Exception as e:
-            self.get_logger().error(f'Error decoding compressed image: {e}')
+            # self.get_logger().error(f'Error decoding compressed image: {e}')
             return
         
         if not self.bar_closed and red_ratio > self.close_threshold:
@@ -123,9 +123,9 @@ class LevelCrossingDetection(Node):
             rclpy.shutdown()
         
         # else: self.get_logger().info(f'Bar Waiting - ratio={red_ratio:.3f}')
-        # cv2.rectangle(src, (self.roi_x1, self.roi_y1), (self.roi_x2, self.roi_y2), (0,255,0), 2)
-        # cv2.imshow('src', src)
-        # cv2.imshow('roi', roi)
+        #cv2.rectangle(src, (self.roi_x1, self.roi_y1), (self.roi_x2, self.roi_y2), (0,255,0), 2)
+        #cv2.imshow('src', src)
+        #cv2.imshow('roi', roi)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             cv2.destroyAllWindows()
             self.destroy_node()
