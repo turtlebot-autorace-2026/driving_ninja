@@ -32,7 +32,7 @@ class ConstructionDetection(Node):
         super().__init__('construct_detect_node')
         self.declare_parameter('obstacle_distance', 0.275)    # 전방 물체 판단 거리 [m]
         self.declare_parameter('min_obstacle_points', 10)    # 물체로 볼 최소 점 개수 (전방 60개 중)
-        self.declare_parameter('finish_timeout', 7.0)       # 마지막 회피 후 이 시간 동안 물체가 없으면 종료 [s]
+        self.declare_parameter('finish_timeout', 4.0)       # 마지막 회피 후 이 시간 동안 물체가 없으면 종료 [s]
         self.declare_parameter('last_lane_hold', 3.0)       # 물체 앞에서 차선이 없을 때 직전 차선을 쓸 시간 [s]
         self.declare_parameter('lane_target_timeout', 0.5)  # 목표점 수신이 끊기면 차선 주행 정지 [s]
         self.declare_parameter('follow_speed', 0.3)#0.3         # 차선 추종 선속도 [m/s]
@@ -101,6 +101,7 @@ class ConstructionDetection(Node):
             '/construction/lane_roi',
             sign_qos
         )
+        self.create_subscription(Bool, '/parking', self.parking_sign_callback, QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         self.state = WAIT
         self.start_stop_until = 0.0
@@ -129,6 +130,14 @@ class ConstructionDetection(Node):
         self.lane_roi = None
         self.publishLaneRoi('')
         self.timer = self.create_timer(0.05, self.moving)
+
+    def parking_sign_callback(self, msg):
+        #if not msg.data:
+        #    return
+        #if self.state not in (FOLLOW, BRAKE, TURN_OUT, CREEP, TURN_BACK):
+        #   return
+        #self.finish('parking sign detected')
+        pass
 
     def now(self):
         return self.get_clock().now().nanoseconds * 1e-9

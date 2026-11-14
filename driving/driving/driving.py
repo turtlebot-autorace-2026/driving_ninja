@@ -322,7 +322,7 @@ class DrivingNode(Node):
             self.last_yolo_processing_seconds = time.perf_counter() - started
 
     def lane_driving_enabled(self):
-        return (self.lane_enabled and self.parking_mode not in ('maneuver', 'halt')
+        return (self.lane_enabled and self.parking_mode not in ('maneuver',) # halt
                 and self.turn_side is None)
 
     def lane_roi_settings(self):
@@ -463,7 +463,7 @@ class DrivingNode(Node):
         self.roi_side = None
         self.roi_half = None
         self.reset_yolo()
-        if mode in ('maneuver', 'halt'):
+        if mode in ('maneuver',):  # aneuver', 'halt'
             self.cmd_vel_pub.publish(Twist())
         elif mode == 'intersection':
             # 주차 완료는 표지판을 기다리지 않고 정해진 시간 동안 왼쪽을 추종한다.

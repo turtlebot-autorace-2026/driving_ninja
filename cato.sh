@@ -1,0 +1,5 @@
+#!/bin/bash
+
+ninja_s
+
+ros2 launch turtlebot3_cartographer cartographer.launch.py use_sim_time:=False

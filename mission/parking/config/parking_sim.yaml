@@ -2,7 +2,7 @@
 # bringup.launch.py가 설치된 이 파일을 읽는다. 일반 실행에는 --params-file로 전달한다.
 parking_detect_node:
   ros__parameters:
-    direction: right  # left=왼쪽 주차, right=오른쪽 주차
+    direction: left  # left=왼쪽 주차, right=오른쪽 주차
     white_ratio: 0.03
     # direction: left는 left.* 배열, right는 right.* 배열을 사용한다.
     # 각 배열은 숫자 6개다. 순서: 0직선 1회전 2직선 3직선 4회전 5직선.
